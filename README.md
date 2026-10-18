@@ -198,9 +198,12 @@ user, every connection came back unnamed and the page was one row, "—". So for
 a connection the core leaves unnamed the app asks the other way round
 (`SocketOwner`): which of the user's processes holds a socket bound to the
 address and port the connection came from (`proc_pidfdinfo`), once per
-connection — a millisecond for a few hundred processes. That names every
-program the user runs; a root daemon does not let its descriptors be listed and
-stays "—". Where the core does name the process nothing changes, and it is the
+connection. One pass reads every socket on the machine, so its cost grows with
+the machine rather than with the connections asked about; each pass is
+followed by a rest a hundred times its length, and a connection that arrives
+during it waits for the next. A TCP socket only counts if it is bound to that
+very address and is not listening. That names every program the user runs; a
+root daemon does not let its descriptors be listed and stays "—". Where the core does name the process nothing changes, and it is the
 page that is put right, not the core: a `PROCESS-NAME` rule is still matched by
 the core's own lookup.
 

@@ -5,21 +5,22 @@ import MoonlightCore
 ///
 /// A listening socket and a client connected to it — the kernel finishes the
 /// handshake into the backlog, so nothing has to accept — or one bound UDP
-/// socket.
+/// socket. `idle` is a TCP socket bound to no address in particular and left
+/// there, neither listening nor connected.
 final class LoopbackSocket {
     private(set) var descriptors: [Int32] = []
-    /// The client's local port for TCP, the bound port for UDP.
+    /// The client's local port for TCP, the bound port for UDP or an idle socket.
     private(set) var port: UInt16 = 0
     /// Where a TCP client connected to: the listener.
     private(set) var listenerPort: UInt16 = 0
 
-    init?(udp: Bool = false, connectTo target: UInt16? = nil) {
-        func address(_ port: UInt16) -> sockaddr_in {
+    init?(udp: Bool = false, connectTo target: UInt16? = nil, idle: Bool = false) {
+        func address(_ port: UInt16, _ host: String) -> sockaddr_in {
             var a = sockaddr_in()
             a.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
             a.sin_family = sa_family_t(AF_INET)
             a.sin_port = port.bigEndian
-            a.sin_addr.s_addr = inet_addr("127.0.0.1")
+            a.sin_addr.s_addr = inet_addr(host)
             return a
         }
         func bound(_ fd: Int32) -> UInt16 {
@@ -30,8 +31,9 @@ final class LoopbackSocket {
             }
             return UInt16(bigEndian: a.sin_port)
         }
-        func call(_ fd: Int32, _ port: UInt16, _ body: (Int32, UnsafePointer<sockaddr>, socklen_t) -> Int32) -> Bool {
-            var a = address(port)
+        func call(_ fd: Int32, _ port: UInt16, at host: String = "127.0.0.1",
+                  _ body: (Int32, UnsafePointer<sockaddr>, socklen_t) -> Int32) -> Bool {
+            var a = address(port, host)
             return withUnsafePointer(to: &a) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     body(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
@@ -39,9 +41,9 @@ final class LoopbackSocket {
             }
         }
 
-        if udp {
-            let fd = socket(AF_INET, SOCK_DGRAM, 0)
-            guard fd >= 0, call(fd, 0, Darwin.bind) else { return nil }
+        if udp || idle {
+            let fd = socket(AF_INET, udp ? SOCK_DGRAM : SOCK_STREAM, 0)
+            guard fd >= 0, call(fd, 0, at: udp ? "127.0.0.1" : "0.0.0.0", Darwin.bind) else { return nil }
             descriptors = [fd]
             port = bound(fd)
             return
@@ -91,7 +93,8 @@ private func resolved(_ path: String?) -> String? {
 func socketOwnerTests() async {
     Check.currentSuite = "Connections · who owns a socket"
 
-    guard let tcp = LoopbackSocket(), let udp = LoopbackSocket(udp: true) else {
+    guard let tcp = LoopbackSocket(), let udp = LoopbackSocket(udp: true),
+          let idle = LoopbackSocket(idle: true) else {
         Check.isTrue(false, "loopback sockets open")
         return
     }
@@ -100,10 +103,15 @@ func socketOwnerTests() async {
     let elsewhere = SocketOwner.Endpoint(udp: false, address: "10.9.8.7", port: tcp.port)
     let unaddressed = SocketOwner.Endpoint(udp: false, address: "", port: tcp.port)
     let otherProtocol = SocketOwner.Endpoint(udp: false, address: "127.0.0.1", port: udp.port)
+    let listening = SocketOwner.Endpoint(udp: false, address: "127.0.0.1", port: tcp.listenerPort)
+    let listeningUnaddressed = SocketOwner.Endpoint(udp: false, address: "", port: tcp.listenerPort)
+    let unconnected = SocketOwner.Endpoint(udp: false, address: "127.0.0.1", port: idle.port)
 
     let started = Date()
-    let found = SocketOwner.scan([here, datagram, elsewhere, unaddressed, otherProtocol])
+    let found = SocketOwner.scan([here, datagram, elsewhere, unaddressed, otherProtocol,
+                                  listening, listeningUnaddressed, unconnected])
     let took = Date().timeIntervalSince(started)
+    idle.close()
     Check.equal(resolved(found[here]), ownExecutable, "a TCP connection is traced to the program that opened it")
     Check.equal(resolved(found[datagram]), ownExecutable, "and a UDP socket to the one that bound it")
     // Two programs can hold the same port number on different addresses; the
@@ -111,20 +119,41 @@ func socketOwnerTests() async {
     Check.isNil(found[elsewhere], "the same port on another address is not this socket")
     Check.equal(resolved(found[unaddressed]), ownExecutable, "with no address to go by, the port decides")
     Check.isNil(found[otherProtocol], "a UDP port is not a TCP one")
-    // The connections page asks once a second.
-    Check.isTrue(took < 0.5, "one pass over every socket is quick (took \(Int(took * 1000)) ms)")
+    // A TCP connection has an address and a port of its own. A server waiting
+    // on a port, or a socket bound to no address that never connected, is not
+    // where one came from: naming it would put another user's connection,
+    // whose socket cannot be read, under this program.
+    Check.isNil(found[listening], "a listening socket is not where a connection came from")
+    Check.isNil(found[listeningUnaddressed], "not even with no address to go by")
+    Check.isNil(found[unconnected], "nor is a TCP socket bound to no address")
+    // How long a pass takes depends on the machine, and the lookup spaces its
+    // passes to match; this only catches one so slow the page would name
+    // nothing at all.
+    Check.isTrue(took < 5, "one pass over every socket finishes (took \(Int(took * 1000)) ms)")
+
+    // Each pass is followed by a rest a hundred times its length. A
+    // connection that comes during it waits for the next pass, rather than
+    // being written off as having no owner.
+    let paced = SocketOwner()
+    _ = await paced.executables(for: ["a": here], at: 0)
+    let resting = await paced.executables(for: ["a": here, "c": datagram], at: 0)
+    Check.equal(resolved(resting["a"]), ownExecutable, "a connection named before a rest keeps its name")
+    Check.isNil(resting["c"], "one that comes during the rest waits")
+    let rested = await paced.executables(for: ["a": here, "c": datagram], at: 1_000)
+    Check.equal(resolved(rested["c"]), ownExecutable, "and is named by the next pass")
 
     // Looked up once per connection: its owner does not change, and a
     // connection whose owner could not be found is not looked for again.
+    // The times are far apart, so no pass is held back by the rest.
     let owners = SocketOwner()
-    let first = await owners.executables(for: ["a": here])
+    let first = await owners.executables(for: ["a": here], at: 0)
     Check.equal(resolved(first["a"]), ownExecutable, "a connection is given its owner")
     tcp.close()
-    let afterClose = await owners.executables(for: ["a": here, "b": here])
+    let afterClose = await owners.executables(for: ["a": here, "b": here], at: 1_000)
     Check.equal(resolved(afterClose["a"]), ownExecutable, "which it keeps once the socket is gone")
     Check.isNil(afterClose["b"], "a socket that is gone has no owner")
-    _ = await owners.executables(for: [:])
-    let forgotten = await owners.executables(for: ["a": here])
+    _ = await owners.executables(for: [:], at: 2_000)
+    let forgotten = await owners.executables(for: ["a": here], at: 3_000)
     Check.isNil(forgotten["a"], "a connection that ended is forgotten, not remembered for the next to reuse its name")
     udp.close()
 }

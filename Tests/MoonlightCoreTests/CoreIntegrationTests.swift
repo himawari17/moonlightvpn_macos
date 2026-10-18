@@ -43,7 +43,14 @@ func coreIntegrationTests() {
     // The app's own layout: the core's home is a folder inside the app's.
     let home = workspace.appendingPathComponent("core", isDirectory: true)
     try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-    let process = MihomoProcess(binary: core, dataDirectory: home)
+    // And the app's own geo databases, which it puts in the core's home before
+    // the core looks. Without them every GEOSITE rule sent the core to GitHub
+    // for GeoSite.dat, and a dropped download failed a config that was fine.
+    // A checkout that never fetched them has none, and downloads as before.
+    // IP-ASN still downloads ASN.mmdb, which the app does not ship.
+    let bundledGeodata = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("Resources/geodata")
+    let process = MihomoProcess(binary: core, dataDirectory: home, geodata: bundledGeodata)
 
     func overrides(_ mode: TunnelMode, _ rules: [RoutingRule] = []) -> MihomoConfig.Overrides {
         MihomoConfig.Overrides(
@@ -258,8 +265,6 @@ func coreIntegrationTests() {
     // databases to parse the rules every subscription has, and gets them from
     // the bundle or not at all. `geox-url` is where it would download them
     // from; pointed at a closed port, any attempt fails at once.
-    let bundledGeodata = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        .appendingPathComponent("Resources/geodata")
     guard Geodata.files(in: bundledGeodata).count == Geodata.fileNames.count else {
         print("· geodata check skipped — run scripts/fetch-geodata.sh first")
         return

@@ -41,15 +41,31 @@ public actor SocketOwner {
     /// poll either, so each is looked for once.
     private var known: [String: String?] = [:]
 
+    /// When the next pass may run, in seconds of the system's uptime.
+    ///
+    /// A pass reads every socket on the machine, so what it costs grows with
+    /// the machine, not with how many connections are asked about — and in
+    /// system-proxy mode nearly every poll brings a new one. Each pass is
+    /// followed by a rest a hundred times as long as it took, which keeps the
+    /// lookup under a hundredth of the time on any machine: a pass of a few
+    /// milliseconds still runs on every poll, one of 50 ms every five seconds.
+    /// A connection that comes in between waits, unnamed, for the next pass.
+    private var nextPass: TimeInterval = -.infinity
+
     public init() {}
 
     /// The executable behind each connection that has one, by id. Connections
-    /// no longer asked about are forgotten.
-    public func executables(for wanted: [String: Endpoint]) -> [String: String] {
+    /// no longer asked about are forgotten. `now` is the system's uptime.
+    public func executables(
+        for wanted: [String: Endpoint],
+        at now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> [String: String] {
         known = known.filter { wanted[$0.key] != nil }
         let unseen = wanted.filter { known[$0.key] == nil }
-        if !unseen.isEmpty {
+        if !unseen.isEmpty, now >= nextPass {
+            let started = ProcessInfo.processInfo.systemUptime
             let found = Self.scan(Set(unseen.values))
+            nextPass = now + (ProcessInfo.processInfo.systemUptime - started) * 100
             for (id, endpoint) in unseen { known[id] = .some(found[endpoint]) }
         }
         return known.compactMapValues { $0 }
@@ -95,6 +111,9 @@ public actor SocketOwner {
                 let inet: in_sockinfo
                 switch info.psi.soi_kind {
                 case Int32(SOCKINFO_TCP):
+                    // A server waiting on a port is never where a connection
+                    // came from, even one bound to the very address.
+                    guard info.psi.soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN else { continue }
                     udp = false
                     inet = info.psi.soi_proto.pri_tcp.tcpsi_ini
                 case Int32(SOCKINFO_IN) where info.psi.soi_protocol == IPPROTO_UDP:
@@ -109,7 +128,7 @@ public actor SocketOwner {
                 let local = withUnsafeBytes(of: inet.insi_laddr) { Array($0.prefix(16)) }
 
                 for candidate in candidates where candidate.endpoint.udp == udp {
-                    let score = match(candidate.address, local)
+                    let score = match(candidate.address, local, udp: udp)
                     if score > (best[candidate.endpoint]?.score ?? 0) {
                         best[candidate.endpoint] = (pid, score)
                     }
@@ -140,15 +159,20 @@ public actor SocketOwner {
     }
 
     /// Whether a socket bound to `local` is where a connection from `wanted`
-    /// came from: 2 for that address, 1 for a socket bound to none — or when
-    /// there is no address to compare — and 0 for another address, which is
-    /// another program's socket that happens to share the port number.
-    private static func match(_ wanted: [UInt8]?, _ local: [UInt8]) -> Int {
+    /// came from: 2 for that address, 1 for a UDP socket bound to none — or
+    /// when there is no address to compare — and 0 for another address, which
+    /// is another program's socket that happens to share the port number.
+    ///
+    /// A TCP socket bound to no address has not connected anywhere, so it is
+    /// never the one: counting it would hand a root daemon's connection, whose
+    /// own socket cannot be read, to whichever of the user's programs holds
+    /// that port on every address.
+    private static func match(_ wanted: [UInt8]?, _ local: [UInt8], udp: Bool) -> Int {
+        if local.allSatisfy({ $0 == 0 }) { return udp ? 1 : 0 }
         guard let wanted, local.count == 16 else { return 1 }
         // An IPv4 address sits in the last four bytes, whether the socket is
         // an IPv4 one or an IPv6 one talking IPv4.
         let bound = wanted.count == 4 ? Array(local[12...]) : local
-        if bound == wanted { return 2 }
-        return bound.allSatisfy { $0 == 0 } ? 1 : 0
+        return bound == wanted ? 2 : 0
     }
 }

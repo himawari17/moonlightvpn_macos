@@ -51,8 +51,7 @@ public enum Format {
     /// "12 дней" / "12 days", with Russian's three-way plural.
     public static func days(_ count: Int?, locale: AppLocale = .ru) -> String {
         guard let count else { return locale == .ru ? "без срока" : "no expiry" }
-        if locale == .en { return "\(count) day\(count == 1 ? "" : "s")" }
-        return "\(count) \(russian(count, "день", "дня", "дней"))"
+        return counted(count, locale, en: ("day", "days"), ru: ("день", "дня", "дней"))
     }
 
     /// Days left, or hours once it is under a day — "12 дней", "7 часов".
@@ -69,16 +68,23 @@ public enum Format {
 
     /// Russian's three-way plural again, for hours.
     public static func hours(_ count: Int, locale: AppLocale = .ru) -> String {
-        if locale == .en { return "\(count) hour\(count == 1 ? "" : "s")" }
-        return "\(count) \(russian(count, "час", "часа", "часов"))"
+        return counted(count, locale, en: ("hour", "hours"), ru: ("час", "часа", "часов"))
     }
 
     /// "19 узлов" / "19 nodes". The count used to be followed by the one word
     /// whatever it was, so a plan with three servers read "3 узлов" and one
     /// with a single server, in English, "1 nodes".
     public static func nodes(_ count: Int, locale: AppLocale = .ru) -> String {
-        if locale == .en { return "\(count) node\(count == 1 ? "" : "s")" }
-        return "\(count) \(russian(count, "узел", "узла", "узлов"))"
+        return counted(count, locale, en: ("node", "nodes"), ru: ("узел", "узла", "узлов"))
+    }
+
+    /// `count` and the noun in the form that follows it: one of English's
+    /// two, or of Russian's three.
+    private static func counted(_ count: Int, _ locale: AppLocale,
+                                en: (one: String, many: String),
+                                ru: (one: String, few: String, many: String)) -> String {
+        let noun = locale == .en ? (count == 1 ? en.one : en.many) : russian(count, ru.one, ru.few, ru.many)
+        return "\(count) \(noun)"
     }
 
     /// The form a Russian noun takes after `count`: the first for 1, 21, 31…,
