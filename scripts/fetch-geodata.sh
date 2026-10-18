@@ -23,6 +23,8 @@ mkdir -p "$DEST"
 # by running it on an empty one: GeoSite.dat for GEOSITE, geoip.metadb for
 # GEOIP — each on its own is not enough. GeoIP.dat is read only under
 # `geodata-mode: true`, and ASN.mmdb only for IP-ASN rules; neither is shipped.
+# ASN.mmdb is MaxMind's GeoLite2 ASN as published, under a licence that has
+# copies replaced within 30 days of each update — see the README.
 # Check again when the core moves. Named as the core names them, which is not
 # how the release does:   name in the home:asset in the release
 FILES="GeoSite.dat:geosite.dat geoip.metadb:geoip.metadb"

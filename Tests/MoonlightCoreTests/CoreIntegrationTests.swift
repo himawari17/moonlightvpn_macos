@@ -47,7 +47,6 @@ func coreIntegrationTests() {
     // the core looks. Without them every GEOSITE rule sent the core to GitHub
     // for GeoSite.dat, and a dropped download failed a config that was fine.
     // A checkout that never fetched them has none, and downloads as before.
-    // IP-ASN still downloads ASN.mmdb, which the app does not ship.
     let bundledGeodata = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("Resources/geodata")
     let process = MihomoProcess(binary: core, dataDirectory: home, geodata: bundledGeodata)
@@ -60,8 +59,10 @@ func coreIntegrationTests() {
     }
 
     // And every kind of the user's own rules, both ways round, pointed at each
-    // kind of target.
-    let everyOwnRule = RoutingRule.Kind.allCases.enumerated().map { index, kind in
+    // kind of target — but IP-ASN, whose database the app does not ship: the
+    // core would download it on every run, and a dropped download would fail
+    // a config that was fine. What a blocked one comes to is checked below.
+    let everyOwnRule = RoutingRule.Kind.allCases.filter { !$0.needsDownload }.enumerated().map { index, kind in
         RoutingRule(kind: kind, value: kind.placeholder,
                     target: ["DIRECT", "REJECT", "Панель"][index % 3],
                     priority: index.isMultiple(of: 2) ? .override : .extend)
@@ -276,6 +277,7 @@ func coreIntegrationTests() {
           geosite: "http://127.0.0.1:9/geosite.dat"
           mmdb: "http://127.0.0.1:9/geoip.metadb"
           geoip: "http://127.0.0.1:9/geoip.dat"
+          asn: "http://127.0.0.1:9/asn.mmdb"
         proxies:
           - {name: "🇳🇱 Amsterdam", type: ss, server: 127.0.0.1, port: 18081, cipher: aes-256-gcm, password: pw}
         proxy-groups:
@@ -314,5 +316,21 @@ func coreIntegrationTests() {
         Check.equal(try FileManager.default.contentsOfDirectory(atPath: freshHome.path).sorted(),
                     Geodata.fileNames.sorted(),
                     "validating is what put the files there, and the core added none")
+
+        // IP-ASN's database is the one the app does not ship. Blocked, it
+        // keeps the config from loading — and is said as a download that did
+        // not go through, not as the core failing.
+        let asnConfig = workspace.appendingPathComponent("asn.yaml")
+        let asnRule = RoutingRule(kind: .ipASN, value: RoutingRule.Kind.ipASN.placeholder,
+                                  target: "DIRECT", priority: .override)
+        try MihomoConfig.build(panelYAML: geoPanel, overrides: overrides(.systemProxy, [asnRule]))
+            .write(to: asnConfig, atomically: true, encoding: .utf8)
+        do {
+            try seeded.validate(configPath: asnConfig)
+            Check.isTrue(false, "an IP-ASN rule does not load with its download blocked")
+        } catch {
+            Check.equal(TunnelIssue.classify(error), .databaseBlocked(asn: true),
+                        "a blocked IP-ASN download is told apart from a failed core")
+        }
     }
 }

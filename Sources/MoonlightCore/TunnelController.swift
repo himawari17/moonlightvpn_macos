@@ -801,6 +801,9 @@ public final class TunnelController: ObservableObject {
     /// or went quiet, as opposed to something another attempt cannot change —
     /// a config the core refuses, a missing helper, routes another VPN holds.
     nonisolated private static func worthAnotherTry(_ error: Error) -> Bool {
+        // A database the network did not let through will not come through a
+        // second later either, and each try can wait over a minute for it.
+        if Geodata.blockedDownload(in: error.localizedDescription) != nil { return false }
         if error is CoreUnresponsive || error is URLError { return true }
         if case MihomoAPI.Failure.notRunning = error { return true }
         return false
@@ -1228,13 +1231,31 @@ public final class TunnelController: ObservableObject {
     /// The rules as last applied.
     public var routingRules: [RoutingRule] { preferences.routingRules }
 
-    /// Checks `rules` against the core, then keeps them and applies them.
+    /// Why the user's rules were not applied.
+    public enum RulesRefusal: Equatable, Sendable {
+        /// The core would not load the config they make.
+        case rejected
+        /// They need a database the core downloads on first use, and the
+        /// download did not go through — an IP-ASN rule where it is blocked.
+        case downloadBlocked(asn: Bool)
+    }
+
+    /// Whether applying `rules` has the core download a database first: one
+    /// of them is an IP-ASN rule, and the core's home has no AS numbers yet.
+    public func downloadsDatabase(for rules: [RoutingRule]) -> Bool {
+        let asn = support.appendingPathComponent("core").appendingPathComponent(Geodata.asnFileName)
+        return rules.contains { $0.enabled && $0.kind.needsDownload }
+            && !FileManager.default.fileExists(atPath: asn.path)
+    }
+
+    /// Checks `rules` against the core, then keeps them and applies them; nil
+    /// once they are, and otherwise why not.
     ///
     /// Checked first because a rule the core refuses does not fail on its own:
     /// the whole config is refused, and a connected tunnel would stop carrying
     /// anything. The check is the core's own `-t`, on the config these rules
     /// would produce, so what passes here is what will load.
-    public func applyRoutingRules(_ rules: [RoutingRule]) async -> Bool {
+    public func applyRoutingRules(_ rules: [RoutingRule]) async -> RulesRefusal? {
         var proposed = overrides(mode: state.isConnected ? (activeMode ?? tunnelMode) : .systemProxy)
         proposed.routingRules = rules
         let overrides = proposed, core = core, panelURL = panelURL
@@ -1251,12 +1272,15 @@ public final class TunnelController: ObservableObject {
             }
         } catch {
             LogStore.shared.client("Rules not applied: \(error.localizedDescription)", level: .error)
-            return false
+            if let file = Geodata.blockedDownload(in: error.localizedDescription) {
+                return .downloadBlocked(asn: file == Geodata.asnFileName)
+            }
+            return .rejected
         }
         preferences.routingRules = rules
         LogStore.shared.client("Applied \(rules.filter(\.enabled).count) rule(s) of the user's own")
         await reapplyRouting()
-        return true
+        return nil
     }
 
     /// Reads the subscription's groups and rules for the rules screen.

@@ -599,6 +599,18 @@ not shipped: `GeoIP.dat`, read only under `geodata-mode: true`, and `ASN.mmdb`,
 read only for `IP-ASN` rules. A config that needs either downloads it on first
 use, as before.
 
+`ASN.mmdb` stays out on purpose, not for its 9 MB (5 in a DMG). It is MaxMind's
+GeoLite2 ASN database exactly as MaxMind publishes it, and its licence has
+every copy destroyed within 30 days of an update and binds whoever is handed
+one to the same terms. A bundled copy would sit in the core's home unchanged
+for as long as the app is installed, since a file there is never replaced.
+So the core keeps fetching it, and the app says so instead: the rule editor
+notes the one-time download under `IP-ASN`, the rules page names the download
+while it applies, and a download that was blocked reads as that — on the rules
+page and as the connect error — rather than as a core that refused the config
+or would not start. A blocked download is not retried, either: a second
+connect attempt would only wait another minute for the same answer.
+
 ## Design system
 
 **Black and white.** The interface is monochrome: a black canvas, surfaces of

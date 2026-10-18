@@ -115,6 +115,19 @@ func remnawaveTests() {
                     .deviceLimit(message: "x"), "the device limit keeps the service's message")
         Check.equal(TunnelIssue.classify(TunFailure(routesTaken: true, reason: "")),
                     .routesTaken, "another VPN's routes")
+        // The core's own words, carried in the error: a database it could not
+        // download is not the core failing.
+        let blocked = """
+            level=error msg="rules[13] [IP-ASN,13335,REJECT,no-resolve] error: can't download ASN.mmdb: \
+            Get \"https://example.org/GeoLite2-ASN.mmdb\": dns resolve failed: couldn't find ip"
+            configuration file /tmp/own-rules.yaml test failed
+            """
+        Check.equal(TunnelIssue.classify(MihomoProcess.Failure.exited(1, blocked)),
+                    .databaseBlocked(asn: true), "a blocked IP-ASN download, from the core's check")
+        Check.equal(TunnelIssue.classify(CoreUnresponsive(log: "can't download GeoSite.dat: EOF")),
+                    .databaseBlocked(asn: false), "and another database, from a core that never answered")
+        Check.equal(TunnelIssue.classify(MihomoProcess.Failure.exited(1, "rules[0] error: unsupported rule type")),
+                    .coreFailed, "a config the core refuses is still the core failing")
         for failure in [SubscriptionClient.Failure.http(502), .empty, .badURL, .deviceLimit(announce: nil)] {
             let text = (failure.errorDescription ?? "").lowercased()
             Check.isTrue(!text.contains("panel"), "log text does not name the panel: \(text)")

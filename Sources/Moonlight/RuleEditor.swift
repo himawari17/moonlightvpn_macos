@@ -44,7 +44,10 @@ struct RuleEditor: View {
             header
             palette.hairlineSoft.frame(height: 1)
             VStack(alignment: .leading, spacing: 14) {
-                field(L.t(.ruleType, locale)) { typePicker }
+                field(L.t(.ruleType, locale)) {
+                    typePicker
+                    if kind.needsDownload { downloadNote }
+                }
                 field(L.t(.ruleValue, locale)) { valueField }
                 field(L.t(.ruleTarget, locale)) { targetList }
                 field(L.t(.rulePriority, locale)) { priorityChoice }
@@ -137,6 +140,16 @@ struct RuleEditor: View {
             .environment(\.liquidGlass, liquidGlass)
             .mlLocale(locale)
         }
+    }
+
+    /// A rule of this kind has the core download a database before it loads:
+    /// once, and not at all where the download is blocked. Said here, before
+    /// the rule is added, rather than only as an apply that fails afterwards.
+    private var downloadNote: some View {
+        Text(L.t(.ruleNeedsDownload, locale))
+            .font(.ml(12))
+            .foregroundStyle(palette.textMuted)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// A row in one of the editor's dropdowns.

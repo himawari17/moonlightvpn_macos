@@ -40,8 +40,17 @@ public enum TunnelIssue: Equatable, Sendable {
     case helperMissing
     /// The installed helper is from another version of the app.
     case helperOutdated
+    /// The core needed a database it downloads on first use, and the download
+    /// did not go through — for an IP-ASN rule, the one database the app does
+    /// not ship. Nothing loads until it does.
+    case databaseBlocked(asn: Bool)
 
     public static func classify(_ error: Error) -> TunnelIssue {
+        // Said in the core's own output, which comes along in the error: not
+        // the core failing, and not something the core will get past alone.
+        if let file = Geodata.blockedDownload(in: error.localizedDescription) {
+            return .databaseBlocked(asn: file == Geodata.asnFileName)
+        }
         switch error {
         case let failure as SubscriptionClient.Failure:
             switch failure {

@@ -38,11 +38,15 @@ struct RulesScreen: View {
     @State private var editing: Editing?
     @State private var dragging: RoutingRule.ID?
     @State private var applying = false
-    @State private var failed = false
+    /// Whether the apply under way has the core download the AS numbers first.
+    @State private var downloading = false
+    /// Why the last apply did not go through, until the draft changes.
+    @State private var refusal: TunnelController.RulesRefusal?
     /// The subscription's rules, parsed once per change rather than per render.
     @State private var profile: [ProfileRule] = []
 
     private var dirty: Bool { draft != saved }
+    private var failed: Bool { refusal != nil }
 
     private var filter: String { query.trimmingCharacters(in: .whitespaces).lowercased() }
 
@@ -84,7 +88,7 @@ struct RulesScreen: View {
                     } else {
                         withAnimation(Motion.standard) { draft.append(rule) }
                     }
-                    failed = false
+                    refusal = nil
                     self.editing = nil
                 },
                 cancel: { self.editing = nil }
@@ -218,13 +222,13 @@ struct RulesScreen: View {
                 set: { on in
                     guard let at = draft.firstIndex(where: { $0.id == rule.id }) else { return }
                     draft[at].enabled = on
-                    failed = false
+                    refusal = nil
                 }
             ),
             edit: { editing = Editing(rule: rule) },
             delete: {
                 withAnimation(Motion.standard) { draft.removeAll { $0.id == rule.id } }
-                failed = false
+                refusal = nil
             },
             startDrag: { dragging = rule.id }
         )
@@ -336,19 +340,23 @@ struct RulesScreen: View {
                     // The note is as wide as the longest thing it says while
                     // the bar is up, so pressing Apply changes the words and
                     // leaves the buttons where the pointer is.
+                    // Where applying has the core download the AS numbers first,
+                    // the wait says so rather than only that it is applying.
+                    let wait = L.t((applying ? downloading : tunnel.downloadsDatabase(for: draft))
+                                   ? .rulesDownloading : .rulesApplying, locale)
                     ZStack(alignment: .leading) {
                         Group {
                             Text(L.t(.rulesUnsaved, locale))
-                            Text(L.t(.rulesApplying, locale))
-                            if failed { Text(L.t(.rulesApplyFailed, locale)) }
+                            Text(wait)
+                            if failed { Text(refusalText) }
                         }
                         .hidden()
                         .accessibilityHidden(true)
                         if applying {
-                            Text(L.t(.rulesApplying, locale))
+                            Text(wait)
                                 .foregroundStyle(palette.text2)
                         } else {
-                            Text(L.t(failed ? .rulesApplyFailed : .rulesUnsaved, locale))
+                            Text(failed ? refusalText : L.t(.rulesUnsaved, locale))
                                 .foregroundStyle(failed ? palette.danger : palette.text2)
                         }
                     }
@@ -356,7 +364,7 @@ struct RulesScreen: View {
                     .fixedSize()
                     Button {
                         withAnimation(Motion.standard) { draft = saved }
-                        failed = false
+                        refusal = nil
                     } label: {
                         Text(L.t(.rulesReset, locale))
                             .font(.ml(12.5, .heavy))
@@ -391,18 +399,26 @@ struct RulesScreen: View {
         .animation(Motion.paint, value: applying)
     }
 
+    /// What went wrong with the last apply: a blocked download is not the
+    /// core refusing the rules, and says which database it was.
+    private var refusalText: String {
+        switch refusal {
+        case .downloadBlocked(let asn):
+            return L.t(asn ? .rulesDownloadBlockedASN : .rulesDownloadBlocked, locale)
+        case .rejected, nil:
+            return L.t(.rulesApplyFailed, locale)
+        }
+    }
+
     private func apply() {
         let rules = draft
+        downloading = tunnel.downloadsDatabase(for: rules)
         applying = true
         Task {
-            let ok = await tunnel.applyRoutingRules(rules)
+            let refused = await tunnel.applyRoutingRules(rules)
             applying = false
-            if ok {
-                saved = rules
-                failed = false
-            } else {
-                failed = true
-            }
+            refusal = refused
+            if refused == nil { saved = rules }
         }
     }
 }

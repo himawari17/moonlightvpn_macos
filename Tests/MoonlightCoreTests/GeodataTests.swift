@@ -50,6 +50,22 @@ func geodataTests() {
                     "nothing is left behind beside them")
     }
 
+    Check.suite("Geodata · a download the network blocked") {
+        Check.equal(Geodata.blockedDownload(
+            in: #"msg="can't initial ASN: can't download ASN.mmdb: Get "http://127.0.0.1:9/asn.mmdb": refused""#),
+                    "ASN.mmdb", "the database is named from the core's own line")
+        Check.equal(Geodata.blockedDownload(in: "can't download GeoSite.dat: EOF"), "GeoSite.dat",
+                    "whichever one it was")
+        Check.isNil(Geodata.blockedDownload(in: "configuration file test failed"),
+                    "a failure that is not a download names none")
+        Check.isNil(Geodata.blockedDownload(in: "can't download "), "nor does a line cut short")
+        // The one kind whose database the app does not ship, and so the one
+        // the rule editor warns about.
+        Check.equal(RoutingRule.Kind.allCases.filter(\.needsDownload), [.ipASN],
+                    "only IP-ASN has the core download a database")
+        Check.isTrue(!Geodata.fileNames.contains(Geodata.asnFileName), "which is not among the shipped ones")
+    }
+
     Check.suite("Geodata · what counts as there") {
         let home = workspace.appendingPathComponent("lowercase", isDirectory: true)
         try manager.createDirectory(at: home, withIntermediateDirectories: true)

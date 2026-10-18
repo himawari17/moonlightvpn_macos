@@ -20,6 +20,26 @@ public enum Geodata {
     /// starts reading is the download back.
     public static let fileNames = ["GeoSite.dat", "geoip.metadb"]
 
+    /// What the core opens for IP-ASN rules, and downloads the first time a
+    /// config has one. Not shipped: it is MaxMind's GeoLite2 ASN database as
+    /// MaxMind publishes it, whose licence has every copy replaced within 30
+    /// days of an update and binds whoever is handed one to the same — and a
+    /// file in the core's home is never replaced. So the core fetches it, and
+    /// the rule editor says so before anyone adds such a rule.
+    public static let asnFileName = "ASN.mmdb"
+
+    /// The database the core could not download, read from its own output —
+    /// `can't download ASN.mmdb: Get "…": …`. Nil when it says no such thing.
+    ///
+    /// A config that needs one does not load without it, and the core says only
+    /// that it exited; this is what tells a blocked download apart from a
+    /// config it refused.
+    public static func blockedDownload(in output: String) -> String? {
+        guard let range = output.range(of: "can't download ") else { return nil }
+        let name = output[range.upperBound...].prefix { !$0.isWhitespace && $0 != ":" }
+        return name.isEmpty ? nil : String(name)
+    }
+
     /// The bundled files that are there. A build run from a checkout that
     /// never fetched them has none, and its core downloads as it always did.
     public static func files(in directory: URL?) -> [URL] {

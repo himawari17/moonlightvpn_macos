@@ -48,6 +48,12 @@ public struct RoutingRule: Identifiable, Hashable, Codable, Sendable {
         /// evaluate this, which only TUN gives it.
         public var needsProcessMatching: Bool { family == .process }
 
+        /// Whether the core has to download a database before it can load a
+        /// rule of this kind: the AS numbers IP-ASN matches, which the app does
+        /// not ship (see ``Geodata/asnFileName``). Where that download is
+        /// blocked, no config with such a rule loads.
+        public var needsDownload: Bool { self == .ipASN }
+
         /// Address rules carry `no-resolve`, so a domain is not looked up just
         /// to be tested against an address — a DNS query per connection.
         var wantsNoResolve: Bool {

@@ -97,8 +97,9 @@ public enum L {
         case targetBuiltIn, targetGroups, targetDirect, targetReject, targetMissing
         case priorityOverride, priorityOverrideSub, priorityExtend, priorityExtendSub
         case familyDomain, familyIP, familyPort, familyProcess, familyOther
-        case ruleCancel, ruleSave, ruleEditHint, ruleDeleteHint, ruleDragHint, ruleTunOnly
+        case ruleCancel, ruleSave, ruleEditHint, ruleDeleteHint, ruleDragHint, ruleTunOnly, ruleNeedsDownload
         case rulesUnsaved, rulesReset, rulesApply, rulesApplying, rulesApplyFailed
+        case rulesDownloading, rulesDownloadBlocked, rulesDownloadBlockedASN
         case rulesEmpty, rulesEmptyHint, rulesProfileEmpty, rulesModeNote
         case invalidEmpty, invalidComma, invalidRegex, invalidPort, invalidCIDR, invalidASN, invalidNetwork
         // Links that open the app
@@ -109,6 +110,7 @@ public enum L {
         case issueErrorCode, issueTryLater, issueLinkRejected, issueEmpty, issueNoUsable
         case issueDeviceLimit, issueDeviceNotSupported, issueCoreFailed, issueCoreStopped
         case issueRoutesTaken, issueTunFailed, issueHelperMissing, issueHelperOutdated
+        case issueDatabaseBlocked, issueDatabaseBlockedASN
         // Notifications
         case notifyExpiringTitle, notifyExpiringBody, notifyExpiredTitle, notifyExpiredBody
         case notifyTrafficLowTitle, notifyTrafficLowBody, notifyTrafficOutTitle, notifyTrafficOutBody
@@ -347,11 +349,15 @@ public enum L {
             case .ruleDeleteHint: return "Удалить"
             case .ruleDragHint: return "Перетащите, чтобы изменить порядок"
             case .ruleTunOnly: return "Работает только в режиме TUN"
+            case .ruleNeedsDownload: return "Для этого правила VPN один раз скачает базу номеров AS — около 9\u{00A0}МБ. Там, где загрузка заблокирована, правило не применится."
             case .rulesUnsaved: return "Изменения не применены"
             case .rulesReset: return "Сбросить"
             case .rulesApply: return "Применить"
             case .rulesApplying: return "Применяются…"
             case .rulesApplyFailed: return "Ядро не приняло эти правила — подробности в логах"
+            case .rulesDownloading: return "Скачивается база для IP-ASN, около 9\u{00A0}МБ…"
+            case .rulesDownloadBlocked: return "Не удалось скачать базу для этих правил"
+            case .rulesDownloadBlockedASN: return "Не удалось скачать базу для IP-ASN"
             case .rulesEmpty: return "Своих правил пока нет"
             case .rulesEmptyHint: return "Пустите сайт мимо VPN, заблокируйте его или направьте через группу. Свои правила переживают обновление подписки."
             case .rulesProfileEmpty: return "В подписке нет правил"
@@ -392,6 +398,8 @@ public enum L {
             case .issueTunFailed: return "Не удалось создать TUN-интерфейс. Подробности — в логах."
             case .issueHelperMissing: return "Для TUN нужен системный помощник — установите его в настройках"
             case .issueHelperOutdated: return "Системный помощник устарел — переустановите его в настройках"
+            case .issueDatabaseBlocked: return "Не удалось скачать базу, нужную правилам, а без неё VPN не запустится. Попробуйте из другой сети."
+            case .issueDatabaseBlockedASN: return "Не удалось скачать базу номеров AS для правил IP-\u{2060}ASN, а без неё VPN не запустится. Попробуйте из другой сети или выключите свои правила IP-\u{2060}ASN."
             case .notifyExpiringTitle: return "Подписка заканчивается"
             case .notifyExpiringBody: return "Осталось {days}. Продлите её в боте, чтобы не остаться без VPN."
             case .notifyExpiredTitle: return "Подписка закончилась"
@@ -637,11 +645,15 @@ public enum L {
             case .ruleDeleteHint: return "Delete"
             case .ruleDragHint: return "Drag to reorder"
             case .ruleTunOnly: return "Works in TUN mode only"
+            case .ruleNeedsDownload: return "For this rule the VPN downloads a database of AS numbers once — about 9\u{00A0}MB. Where the download is blocked, the rule can't be applied."
             case .rulesUnsaved: return "Changes not applied"
             case .rulesReset: return "Reset"
             case .rulesApply: return "Apply"
             case .rulesApplying: return "Applying…"
             case .rulesApplyFailed: return "The core rejected these rules — the log has the details"
+            case .rulesDownloading: return "Downloading the IP-ASN database, about 9\u{00A0}MB…"
+            case .rulesDownloadBlocked: return "Couldn't download the database these rules need"
+            case .rulesDownloadBlockedASN: return "Couldn't download the IP-ASN database"
             case .rulesEmpty: return "No rules of your own yet"
             case .rulesEmptyHint: return "Send a site around the VPN, block it or route it through a group. Your rules survive subscription updates."
             case .rulesProfileEmpty: return "The subscription has no rules"
@@ -682,6 +694,8 @@ public enum L {
             case .issueTunFailed: return "Couldn't create the TUN interface. See the logs for details."
             case .issueHelperMissing: return "TUN needs the system helper — install it in Settings"
             case .issueHelperOutdated: return "The system helper is out of date — reinstall it in Settings"
+            case .issueDatabaseBlocked: return "Couldn't download a database the rules need, and the VPN can't start without it. Try another network."
+            case .issueDatabaseBlockedASN: return "Couldn't download the AS-number database IP-\u{2060}ASN rules need, and the VPN can't start without it. Try another network, or turn off your IP-\u{2060}ASN rules."
             case .notifyExpiringTitle: return "Your subscription is ending"
             case .notifyExpiringBody: return "{days} left. Renew it in the bot to stay connected."
             case .notifyExpiredTitle: return "Your subscription has ended"
@@ -741,6 +755,7 @@ extension L {
         case .tunFailed: return t(.issueTunFailed, locale)
         case .helperMissing: return t(.issueHelperMissing, locale)
         case .helperOutdated: return t(.issueHelperOutdated, locale)
+        case .databaseBlocked(let asn): return t(asn ? .issueDatabaseBlockedASN : .issueDatabaseBlocked, locale)
         }
     }
 }
