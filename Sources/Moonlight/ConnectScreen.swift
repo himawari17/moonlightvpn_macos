@@ -31,6 +31,10 @@ struct ConnectScreen: View {
     static let drawer = Motion.standard
     private static let pickerHeight: CGFloat = 60
     private static let drawerGap: CGFloat = 10
+    /// The least room — about three and a half rows — in which the list
+    /// scrolls on its own under the picker. With less, it opens to its full
+    /// length and the page scrolls instead.
+    private static let drawerMinRoom: CGFloat = 220
 
     var body: some View {
         GeometryReader { geometry in
@@ -41,33 +45,46 @@ struct ConnectScreen: View {
             // sits lower than the window's — and the eye centres on the window.
             let frame = geometry.frame(in: .global)
             let centre = (frame.minY + height + RootView.pageBottomInset) / 2 - frame.minY
-            VStack(spacing: 0) {
-                timer
-                    .padding(.bottom, 20)
-                    .background(measure(AboveButtonKey.self))
-                PowerButton(state: tunnel.state, enabled: tunnel.hasSubscription,
-                            large: !serversOpen) {
-                    Task { await tunnel.toggle() }
+            // The page scrolls once the open list is too long for it — with a
+            // long announcement there was room for two servers and no way to
+            // reach the rest. While everything fits there is nothing to scroll.
+            ScrollView {
+                VStack(spacing: 0) {
+                    timer
+                        .padding(.bottom, 20)
+                        .background(measure(AboveButtonKey.self))
+                    PowerButton(state: tunnel.state, enabled: tunnel.hasSubscription,
+                                large: !serversOpen) {
+                        Task { await tunnel.toggle() }
+                    }
+                    .help("\(L.t(tunnel.state.isConnected ? .hintDisconnect : .hintConnect, locale)) · ⌘⇧C")
+                    belowButtonContent
+                        .background(measure(BelowButtonKey.self))
+                    if !tunnel.nodes.isEmpty {
+                        drawer(room: height - aboveButton - PowerButton.side(large: false)
+                               - belowButton - Self.drawerGap)
+                            .frame(maxWidth: 560)
+                            .padding(.top, Self.drawerGap)
+                    }
                 }
-                .help("\(L.t(tunnel.state.isConnected ? .hintDisconnect : .hintConnect, locale)) · ⌘⇧C")
-                belowButtonContent
-                    .background(measure(BelowButtonKey.self))
-                if !tunnel.nodes.isEmpty {
-                    drawer(room: height - aboveButton - PowerButton.side(large: false)
-                           - belowButton - Self.drawerGap)
-                        .frame(maxWidth: 560)
-                        .padding(.top, Self.drawerGap)
-                }
+                // Closed, the button is the page: large, and the column it heads —
+                // time, button, state, servers — sits in the middle of the window,
+                // as much space above as below. Centring the button alone left the
+                // column hanging low under a band of empty space. Opening the
+                // drawer shrinks the button and lifts the column to the top, and
+                // the list takes the room that frees.
+                .padding(.top, serversOpen ? 0 : Self.centredOffset(
+                    page: height, centre: centre, column: aboveButton + button + belowButton))
+                .frame(maxWidth: .infinity, minHeight: height, alignment: .top)
+                // Out to the window's edges and the margins taken back inside, as
+                // in `PageScroll`, so the scroll view clips no card's shadow.
+                .padding(.horizontal, RootView.pageGutter)
+                .padding(.bottom, RootView.pageBottomInset)
             }
-            // Closed, the button is the page: large, and the column it heads —
-            // time, button, state, servers — sits in the middle of the window,
-            // as much space above as below. Centring the button alone left the
-            // column hanging low under a band of empty space. Opening the
-            // drawer shrinks the button and lifts the column to the top, and
-            // the list takes the room that frees.
-            .padding(.top, serversOpen ? 0 : Self.centredOffset(
-                page: height, centre: centre, column: aboveButton + button + belowButton))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .mlScrollIndicators(hidden: true)
+            .mlScrollBounceBasedOnSize()
+            .padding(.horizontal, -RootView.pageGutter)
+            .padding(.bottom, -RootView.pageBottomInset)
         }
         .onPreferenceChange(AboveButtonKey.self) { settle($aboveButton, $0) }
         .onPreferenceChange(BelowButtonKey.self) { settle($belowButton, $0) }
@@ -303,43 +320,61 @@ struct ConnectScreen: View {
     /// height moves, from nothing to its measured content, so opening is one
     /// continuous motion rather than a list popping in and a card resizing
     /// after it. It may use whatever height is left under the picker; past
-    /// that it scrolls.
+    /// that it scrolls. When too little is left for that to be usable — a long
+    /// announcement above it — it opens to its full length and the page scrolls.
     private func drawer(room: CGFloat) -> some View {
-        ScrollView {
-            VStack(spacing: 2) {
-                autoRow.modifier(Cascade(index: 0, shown: serversOpen))
-                ForEach(Array(tunnel.selectableNodes.enumerated()), id: \.element.id) { index, node in
-                    NodeRow(
-                        node: node,
-                        selected: !tunnel.autoSelect && node.name == tunnel.selectedNode,
-                        measuring: tunnel.pendingProbes.contains(node.name)
-                    ) {
-                        Task { await tunnel.select(node: node.name) }
-                        withAnimation(Self.drawer) { serversOpen = false }
-                    }
-                    .modifier(Cascade(index: index + 1, shown: serversOpen))
-                }
-            }
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: DrawerHeightKey.self, value: proxy.size.height)
-                }
-            )
+        let inPlace = room >= Self.drawerMinRoom
+        let open = inPlace ? min(drawerContent + 16, room) : drawerContent + 16
+        return drawerBody(scrolls: inPlace)
+            .onPreferenceChange(DrawerHeightKey.self) { drawerContent = $0 }
+            .padding(8)
+            .frame(height: serversOpen ? max(0, open) : 0, alignment: .top)
+            .clipped()
+            .mlGlass(.rounded(Radii.card), fallback: palette.surface)
+            // Unfolds from the picker: a hair smaller and transparent while
+            // closed, so the card grows out of the pill instead of sliding in.
+            .scaleEffect(serversOpen ? 1 : 0.97, anchor: .top)
+            .animation(Self.drawer, value: serversOpen)
+            // Closing, the card fades faster than it folds, so an empty card is
+            // never left shrinking after its rows have gone.
+            .opacity(serversOpen ? 1 : 0)
+            .animation(serversOpen ? Self.drawer : .easeOut(duration: 0.2), value: serversOpen)
+            .allowsHitTesting(serversOpen)
+    }
+
+    /// The rows, in a scroll view of their own only when the list scrolls in
+    /// place: one that has nothing to scroll still swallows the wheel, and the
+    /// page under it would not move.
+    @ViewBuilder
+    private func drawerBody(scrolls: Bool) -> some View {
+        if scrolls {
+            ScrollView { drawerRows }
+                .mlScrollIndicators(hidden: true)
+        } else {
+            drawerRows.fixedSize(horizontal: false, vertical: true)
         }
-        .mlScrollIndicators(hidden: true)
-        .onPreferenceChange(DrawerHeightKey.self) { drawerContent = $0 }
-        .padding(8)
-        .frame(height: serversOpen ? max(0, min(drawerContent + 16, room)) : 0, alignment: .top)
-        .mlGlass(.rounded(Radii.card), fallback: palette.surface)
-        // Unfolds from the picker: a hair smaller and transparent while
-        // closed, so the card grows out of the pill instead of sliding in.
-        .scaleEffect(serversOpen ? 1 : 0.97, anchor: .top)
-        .animation(Self.drawer, value: serversOpen)
-        // Closing, the card fades faster than it folds, so an empty card is
-        // never left shrinking after its rows have gone.
-        .opacity(serversOpen ? 1 : 0)
-        .animation(serversOpen ? Self.drawer : .easeOut(duration: 0.2), value: serversOpen)
-        .allowsHitTesting(serversOpen)
+    }
+
+    private var drawerRows: some View {
+        VStack(spacing: 2) {
+            autoRow.modifier(Cascade(index: 0, shown: serversOpen))
+            ForEach(Array(tunnel.selectableNodes.enumerated()), id: \.element.id) { index, node in
+                NodeRow(
+                    node: node,
+                    selected: !tunnel.autoSelect && node.name == tunnel.selectedNode,
+                    measuring: tunnel.pendingProbes.contains(node.name)
+                ) {
+                    Task { await tunnel.select(node: node.name) }
+                    withAnimation(Self.drawer) { serversOpen = false }
+                }
+                .modifier(Cascade(index: index + 1, shown: serversOpen))
+            }
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: DrawerHeightKey.self, value: proxy.size.height)
+            }
+            )
     }
 
     private var emptyState: some View {

@@ -44,6 +44,17 @@ extension View {
         }
     }
 
+    /// No rubber-banding while the content fits: a page that only sometimes
+    /// overflows should not bounce the rest of the time.
+    @ViewBuilder
+    func mlScrollBounceBasedOnSize() -> some View {
+        if #available(macOS 13.3, *) {
+            scrollBounceBehavior(.basedOnSize)
+        } else {
+            self
+        }
+    }
+
     /// The pointing hand on hover.
     ///
     /// AppKit does not infer this from a SwiftUI `Button` the way the web does
