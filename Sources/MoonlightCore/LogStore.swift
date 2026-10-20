@@ -15,6 +15,14 @@ public struct LogEntry: Identifiable, Hashable, Sendable {
             default: self = .info
             }
         }
+
+        /// Warnings and errors — what explains a failure after the fact, and
+        /// so what the log keeps longest.
+        public var isProblem: Bool { self == .warning || self == .error }
+
+        /// How long a line at this level stays in the log: two hours for the
+        /// running account of debug and info, ten for warnings and errors.
+        public var kept: TimeInterval { isProblem ? 10 * 3600 : 2 * 3600 }
     }
 
     public enum Source: String, CaseIterable, Sendable {
@@ -40,16 +48,24 @@ public struct LogEntry: Identifiable, Hashable, Sendable {
 
 /// The log the viewer reads.
 ///
-/// Bounded: a core at debug level emits a line per connection, and an app left
-/// running for a week would otherwise hold every one of them. The cap is on
-/// entries rather than bytes because that is what the list has to render.
+/// Bounded twice. By age — see ``LogEntry/Level/kept`` — so the log is the
+/// last hours rather than everything since launch. And by count, since a core
+/// at info level writes a line per connection and two hours of a browser is a
+/// great many of them; the cap is on entries rather than bytes because that is
+/// what the list has to render. Warnings and errors have a cap of their own:
+/// under one shared cap, an evening of connection lines pushed out the one
+/// error that said why the tunnel had dropped.
 @MainActor
 public final class LogStore: ObservableObject {
     public static let shared = LogStore()
 
     @Published public private(set) var entries: [LogEntry] = []
 
-    private let limit = 2_000
+    private let routineLimit: Int
+    private let problemLimit: Int
+    /// When lines were last dropped for their age. That needs a pass over the
+    /// whole log, so it runs once a minute rather than with every line.
+    private var lastPrune = Date.distantPast
     private var coreStream: Task<Void, Never>?
     /// The core being followed, so the stream can be reopened at another level.
     private var followed: MihomoAPI?
@@ -58,7 +74,10 @@ public final class LogStore: ObservableObject {
     /// Longest first, so a link is masked whole before its host is.
     private var redactions: [String] = []
 
-    public init() {}
+    public init(routineLimit: Int = 3_000, problemLimit: Int = 1_000) {
+        self.routineLimit = routineLimit
+        self.problemLimit = problemLimit
+    }
 
     /// Strings that must never reach the screen — the subscription link, its
     /// host and token, server addresses. Masked in every entry, including the
@@ -82,25 +101,72 @@ public final class LogStore: ObservableObject {
         }
     }
 
-    public func append(_ level: LogEntry.Level, _ source: LogEntry.Source, _ message: String) {
-        entries.append(LogEntry(level: level, source: source, message: redact(message)))
-        trim()
+    public func append(_ level: LogEntry.Level, _ source: LogEntry.Source, _ message: String,
+                       at date: Date = Date()) {
+        entries.append(LogEntry(at: date, level: level, source: source, message: redact(message)))
+        trim(now: date)
     }
 
     /// Several of the core's lines at once: one change to the list, and so one
     /// redraw of whatever is showing it, however many arrived together.
-    private func append(core lines: [MihomoAPI.LogLine]) {
-        guard !lines.isEmpty else { return }
-        entries.append(contentsOf: lines.map {
-            LogEntry(level: LogEntry.Level(core: $0.type), source: .core, message: redact($0.payload))
+    private func append(core lines: [MihomoAPI.LogLine], at date: Date = Date()) {
+        let kept = lines.filter { !Self.isShutdownNoise($0.payload) }
+        guard !kept.isEmpty else { return }
+        entries.append(contentsOf: kept.map {
+            LogEntry(at: date, level: LogEntry.Level(core: $0.type), source: .core,
+                     message: redact($0.payload))
         })
-        trim()
+        trim(now: date)
     }
 
-    private func trim() {
-        if entries.count > limit {
-            entries.removeFirst(entries.count - limit)
+    /// The core's TUN reader saying its device was closed under it — which is
+    /// what stopping a TUN core does, on every disconnect, every switch to the
+    /// system proxy and every reload under TUN. It arrived as an ERROR line
+    /// ("batch read packet: bad file descriptor") each time, and read as a
+    /// fault when it is the shutdown working.
+    nonisolated public static func isShutdownNoise(_ payload: String) -> Bool {
+        let text = payload.lowercased()
+        guard text.contains("read packet") else { return false }
+        return text.contains("bad file descriptor") || text.contains("file already closed")
+            || text.contains("use of closed file")
+    }
+
+    /// Drops lines past their age — see ``LogEntry/Level/kept``. Run on its
+    /// own as well as with new lines, so a log nobody wrote to for an hour is
+    /// still the right age when it is opened.
+    public func prune(now: Date = Date()) {
+        trim(now: now, force: true)
+    }
+
+    /// Keeps the log inside its age and its two caps.
+    private func trim(now: Date, force: Bool = false) {
+        let due = force || now.timeIntervalSince(lastPrune) >= 60
+        let problems = entries.lazy.filter(\.level.isProblem).count
+        var routineExcess = entries.count - problems - routineLimit
+        var problemExcess = problems - problemLimit
+        guard due || routineExcess > 0 || problemExcess > 0 else { return }
+        if due { lastPrune = now }
+        // Oldest first, so the lines a cap drops are the oldest of their kind.
+        entries.removeAll { entry in
+            let problem = entry.level.isProblem
+            let stale = due && now.timeIntervalSince(entry.at) > entry.level.kept
+            guard stale || (problem ? problemExcess : routineExcess) > 0 else { return false }
+            if problem { problemExcess -= 1 } else { routineExcess -= 1 }
+            return true
         }
+    }
+
+    /// `entries` as text, one line each, for the clipboard — already redacted,
+    /// like everything the log holds.
+    nonisolated public static func text(of entries: [LogEntry]) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return entries.map { entry in
+            let level = entry.level == .warning ? "WARN" : entry.level.rawValue.uppercased()
+            return "\(formatter.string(from: entry.at))  \(level)  "
+                + "\(entry.source.rawValue.uppercased())  \(entry.message)"
+        }.joined(separator: "\n")
     }
 
     /// The app's own narration of what it is doing, which is the half of the log

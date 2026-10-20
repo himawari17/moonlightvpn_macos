@@ -42,6 +42,11 @@ public struct SubscriptionClient: Sendable {
         case deviceLimit(announce: String?)
         /// The service requires a device identifier this request did not pass.
         case deviceNotSupported
+        /// The service answered with stand-ins instead of servers — see
+        /// ``MihomoConfig/isStandIn(_:)``. Carries what the response said about
+        /// the plan, which is still true: an expired account is the common
+        /// reason, and its days and traffic should show as they are.
+        case noServers(info: SubscriptionInfo)
 
         public var errorDescription: String? {
             switch self {
@@ -51,6 +56,7 @@ public struct SubscriptionClient: Sendable {
             case .unusable(let why): return why
             case .deviceLimit: return "Device limit reached for this subscription"
             case .deviceNotSupported: return "Subscription requires a device identifier"
+            case .noServers: return "Subscription came with placeholder entries and no servers"
             }
         }
     }
@@ -109,6 +115,9 @@ public struct SubscriptionClient: Sendable {
                 guard Self.looksLikeClashConfig(body) else {
                     throw Failure.unusable("\(suffix) endpoint did not return a Clash config")
                 }
+                guard MihomoConfig.hasServers(panelYAML: body) else {
+                    throw Failure.noServers(info: info)
+                }
                 return Result(yaml: body, info: info,
                               source: suffix == "mihomo" ? .mihomo : .clash)
             } catch let failure as Failure where failure.isAboutTheAccount {
@@ -116,6 +125,9 @@ public struct SubscriptionClient: Sendable {
                 // turns a clear answer into a vague one.
                 throw failure
             } catch {
+                // Stopped on purpose: the next endpoint would only be
+                // cancelled in turn.
+                try Task.checkCancellation()
                 lastError = error
             }
         }
@@ -125,6 +137,9 @@ public struct SubscriptionClient: Sendable {
         do {
             let (body, info) = try await get(base)
             if Self.looksLikeClashConfig(body) {
+                guard MihomoConfig.hasServers(panelYAML: body) else {
+                    throw Failure.noServers(info: info)
+                }
                 return Result(yaml: body, info: info, source: .clash)
             }
             let links = ShareLink.decodeList(body)
@@ -132,6 +147,9 @@ public struct SubscriptionClient: Sendable {
             let proxies = links.compactMap(ShareLink.mihomoProxy)
             guard !proxies.isEmpty else {
                 throw Failure.unusable("Subscription has \(links.count) nodes, none of a type mihomo supports")
+            }
+            guard proxies.contains(where: { !MihomoConfig.isStandIn($0) }) else {
+                throw Failure.noServers(info: info)
             }
             return Result(yaml: MihomoConfig.yamlFromProxies(proxies),
                           info: info, source: .shareLinks)
@@ -390,7 +408,7 @@ extension SubscriptionClient.Failure {
     /// endpoint.
     var isAboutTheAccount: Bool {
         switch self {
-        case .deviceLimit, .deviceNotSupported: return true
+        case .deviceLimit, .deviceNotSupported, .noServers: return true
         default: return false
         }
     }

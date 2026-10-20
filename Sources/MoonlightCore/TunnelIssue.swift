@@ -23,6 +23,9 @@ public enum TunnelIssue: Equatable, Sendable {
     case emptySubscription
     /// It has servers, but none this app can use.
     case noUsableServers
+    /// The service sent stand-ins instead of servers this time, so the list
+    /// already on screen was kept.
+    case noServersSent
     /// The account is at its device limit, with the service's own explanation
     /// when it sent one.
     case deviceLimit(message: String?)
@@ -61,6 +64,7 @@ public enum TunnelIssue: Equatable, Sendable {
             case .unusable: return .noUsableServers
             case .deviceLimit(let message): return .deviceLimit(message: message)
             case .deviceNotSupported: return .deviceNotSupported
+            case .noServers: return .noServersSent
             }
         case let error as URLError:
             switch error.code {

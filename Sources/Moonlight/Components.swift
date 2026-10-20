@@ -555,41 +555,32 @@ struct AnnounceBanner: View {
 
     private var collapsed: Bool { kept.folded == text }
 
+    /// Folds, but does not go away: the service writes it for its users,
+    /// and a message put away could not be got back when it mattered. Folded
+    /// it is a single line.
     var body: some View {
-        if kept.dismissed != text {
-            HStack(alignment: .top, spacing: 12) {
-                IconView(.messageCircle, size: 17)
-                    .foregroundStyle(palette.accentInk)
-                    .padding(.top, 1)
-                message
-                Button(action: toggle) {
-                    // One chevron that turns, as on the server picker, rather
-                    // than two glyphs swapped.
-                    IconView(.chevronRight, size: 14, strokeWidth: 2.4)
-                        .rotationEffect(.degrees(collapsed ? 90 : -90))
-                        .foregroundStyle(palette.textMuted)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .pressIcon()
-                .help(L.t(collapsed ? .expandAnnounce : .collapseAnnounce, locale))
-                Button {
-                    withAnimation(Motion.standard) { kept.dismissed = text }
-                } label: {
-                    IconView(.x, size: 14)
-                        .foregroundStyle(palette.textMuted)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .pressIcon()
-                .help(L.t(.hideAnnounce, locale))
+        HStack(alignment: .top, spacing: 12) {
+            IconView(.messageCircle, size: 17)
+                .foregroundStyle(palette.accentInk)
+                .padding(.top, 1)
+            message
+            Button(action: toggle) {
+                // One chevron that turns, as on the server picker, rather
+                // than two glyphs swapped.
+                IconView(.chevronRight, size: 14, strokeWidth: 2.4)
+                    .rotationEffect(.degrees(collapsed ? 90 : -90))
+                    .foregroundStyle(palette.textMuted)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
-            .mlGlass(.rounded(Radii.card), tint: palette.accent.opacity(0.18),
-                     fallback: palette.accentQuiet)
-            .transition(.opacity)
+            .pressIcon()
+            .help(L.t(collapsed ? .expandAnnounce : .collapseAnnounce, locale))
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .mlGlass(.rounded(Radii.card), tint: palette.accent.opacity(0.18),
+                 fallback: palette.accentQuiet)
+        .transition(.opacity)
     }
 
     /// The message whole, and its first line, one over the other.
@@ -633,9 +624,9 @@ struct AnnounceBanner: View {
     }
 }
 
-/// What was done with the announcement — folded, or put away — and to which
-/// message, kept across launches and shared by every place the banner shows:
-/// the connect page, the subscription page and the tray.
+/// Which announcement is folded, kept across launches and shared by every
+/// place the banner shows: the connect page, the subscription page and the
+/// tray.
 ///
 /// An object the banner observes rather than `@AppStorage` on the banner. A
 /// value written through the defaults comes back to the view from the
@@ -650,17 +641,20 @@ final class AnnounceMemory: ObservableObject {
     @Published var folded: String {
         didSet { UserDefaults.standard.set(folded, forKey: Self.foldedKey) }
     }
-    /// The message put away, or none.
-    @Published var dismissed: String {
-        didSet { UserDefaults.standard.set(dismissed, forKey: Self.dismissedKey) }
-    }
 
     private static let foldedKey = "collapsedAnnouncement"
+    /// Where earlier versions kept a message the user had put away.
     private static let dismissedKey = "dismissedAnnouncement"
 
     private init() {
-        folded = UserDefaults.standard.string(forKey: Self.foldedKey) ?? ""
-        dismissed = UserDefaults.standard.string(forKey: Self.dismissedKey) ?? ""
+        let defaults = UserDefaults.standard
+        // The banner can no longer be put away; one that was comes back
+        // folded rather than open.
+        if let dismissed = defaults.string(forKey: Self.dismissedKey) {
+            if !dismissed.isEmpty { defaults.set(dismissed, forKey: Self.foldedKey) }
+            defaults.removeObject(forKey: Self.dismissedKey)
+        }
+        folded = defaults.string(forKey: Self.foldedKey) ?? ""
     }
 }
 

@@ -221,6 +221,44 @@ func configTests() {
         Check.equal(replaced?["enable"] as? Bool, true, "a switched-off sniffer is replaced by the app's")
     }
 
+    Check.suite("MihomoConfig · the panel's order") {
+        let subscription = """
+        proxies:
+          - {name: "🇷🇺 Russia", type: ss, server: 10.0.0.1, port: 1, cipher: aes-256-gcm, password: pw}
+          - {name: "🇪🇪 Estonia", type: ss, server: 10.0.0.2, port: 1, cipher: aes-256-gcm, password: pw}
+          - {name: "🇩🇪 Germany", type: ss, server: 10.0.0.3, port: 1, cipher: aes-256-gcm, password: pw}
+        """
+        let order = MihomoConfig.proxyOrder(panelYAML: subscription)
+        Check.equal(order, ["🇷🇺 Russia", "🇪🇪 Estonia", "🇩🇪 Germany"], "the servers, as the subscription lists them")
+        // What the core reports for a group with `include-all`: its own
+        // entries first, then every server sorted by name.
+        Check.equal(MihomoConfig.inPanelOrder(["Auto", "🇩🇪 Germany", "🇪🇪 Estonia", "🇷🇺 Russia"], order: order),
+                    ["Auto", "🇷🇺 Russia", "🇪🇪 Estonia", "🇩🇪 Germany"],
+                    "servers go back into the subscription's order, the auto-picker stays first")
+        Check.equal(MihomoConfig.inPanelOrder(["🇩🇪 Germany", "Balancer", "🇷🇺 Russia"], order: order),
+                    ["🇷🇺 Russia", "Balancer", "🇩🇪 Germany"],
+                    "a group between servers keeps its place")
+        Check.equal(MihomoConfig.inPanelOrder(["DIRECT", "Elsewhere"], order: order), ["DIRECT", "Elsewhere"],
+                    "names the subscription does not list are left alone")
+    }
+
+    Check.suite("MihomoConfig · stand-ins") {
+        // What the panel sends when it has no server for this client: its
+        // message as the names, pointing at nothing.
+        let standIns = """
+        proxies:
+          - {name: "→ No hosts found", type: vless, server: 0.0.0.0, port: 1, uuid: 00000000-0000-0000-0000-000000000000}
+          - {name: "→ Check Hosts tab", type: vless, server: 0.0.0.0, port: 1, uuid: 00000000-0000-0000-0000-000000000000}
+        """
+        Check.isTrue(!MihomoConfig.hasServers(panelYAML: standIns), "a list of stand-ins has no servers")
+        Check.isTrue(MihomoConfig.hasServers(panelYAML: panelYAML), "a real subscription has")
+        Check.isTrue(MihomoConfig.isStandIn(["server": "1.2.3.4", "uuid": "00000000-0000-0000-0000-000000000000"]),
+                     "the all-zero id alone gives one away")
+        Check.isTrue(!MihomoConfig.isStandIn(["server": "127.0.0.1", "uuid": "b831381d-6324-4d53-ad4f-8cda48b30811"]),
+                     "a server on loopback is still a server")
+        Check.isTrue(!MihomoConfig.hasServers(panelYAML: "proxies: []"), "nor does an empty list")
+    }
+
     Check.suite("MihomoConfig · failure modes") {
         var threw = false
         do { _ = try MihomoConfig.build(panelYAML: "just a string", overrides: overrides()) }

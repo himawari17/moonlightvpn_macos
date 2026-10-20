@@ -208,7 +208,87 @@ func controllerTests() async {
     }
     Check.isTrue(woken, "and it is back as soon as something is on screen — log:\n    \(lastLog())")
 
+    if let server = SubscriptionServer() {
+        await refreshTests(tunnel: tunnel, preferences: preferences, server: server,
+                           subscription: support.appendingPathComponent("subscription.yaml"),
+                           lastLog: lastLog)
+        server.stop()
+    } else {
+        Check.isTrue(false, "a loopback subscription server could be opened for the refresh tests")
+    }
+
     await tunnel.shutdown()
     _ = await eventually(5) { cores().isEmpty }
     cores().forEach { kill($0, SIGKILL) }
+}
+
+/// Refreshes through the controller, from a subscription server on loopback,
+/// on the core the tests above left running.
+@MainActor
+private func refreshTests(
+    tunnel: TunnelController, preferences: Preferences, server: SubscriptionServer,
+    subscription: URL, lastLog: () -> String
+) async {
+    preferences.subscriptionURL = server.url
+
+    Check.currentSuite = "Controller · servers in the subscription's order"
+    // `include-all` hands the servers to the group sorted by name — Berlin,
+    // Helsinki, Amsterdam — whatever order the subscription lists them in.
+    server.body = """
+    proxies:
+      - {name: "🇳🇱 Amsterdam", type: ss, server: 127.0.0.1, port: 18081, cipher: aes-256-gcm, password: pw}
+      - {name: "🇫🇮 Helsinki",  type: ss, server: 127.0.0.1, port: 18082, cipher: aes-256-gcm, password: pw}
+      - {name: "🇩🇪 Berlin",    type: ss, server: 127.0.0.1, port: 18083, cipher: aes-256-gcm, password: pw}
+    proxy-groups:
+      - {name: "Панель", type: select, include-all: true, proxies: ["Авто"]}
+      - {name: "Авто", type: url-test, include-all: true, lazy: true, url: "http://127.0.0.1:9/", interval: 300}
+    rules:
+      - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+      - MATCH,Панель
+    """
+    let ordered = await tunnel.refresh()
+    Check.equal(ordered, .updated, "the refresh goes through — log:\n    \(lastLog())")
+    Check.equal(tunnel.nodes.map(\.name), ["Авто", "🇳🇱 Amsterdam", "🇫🇮 Helsinki", "🇩🇪 Berlin"],
+                "in the subscription's order, not sorted by name")
+    Check.isNil(tunnel.issue, "with nothing to report")
+
+    Check.currentSuite = "Controller · a refresh that brings no servers"
+    let shown = tunnel.nodes.map(\.name)
+    let kept = try? String(contentsOf: subscription, encoding: .utf8)
+    server.body = """
+    proxies:
+      - {name: "→ No hosts found", type: vless, server: 0.0.0.0, port: 1, uuid: 00000000-0000-0000-0000-000000000000}
+    proxy-groups:
+      - {name: "Панель", type: select, include-all: true}
+    rules:
+      - MATCH,Панель
+    """
+    let empty = await tunnel.refresh()
+    Check.equal(empty, .failed, "it is not taken as an update")
+    Check.equal(tunnel.issue, .noServersSent, "the user is told the list was kept")
+    Check.equal(tunnel.nodes.map(\.name), shown, "the servers on screen stay")
+    Check.equal(try? String(contentsOf: subscription, encoding: .utf8), kept,
+                "and so does the subscription on disk")
+
+    Check.currentSuite = "Controller · a refresh stopped half way"
+    server.body = """
+    proxies:
+      - {name: "🇳🇱 Amsterdam", type: ss, server: 127.0.0.1, port: 18081, cipher: aes-256-gcm, password: pw}
+    proxy-groups:
+      - {name: "Панель", type: select, proxies: ["🇳🇱 Amsterdam"]}
+    rules:
+      - MATCH,Панель
+    """
+    server.delay = 30
+    let refreshing = Task { await tunnel.refresh() }
+    let offered = await eventually(8) { tunnel.canStopRefresh }
+    Check.isTrue(offered, "a refresh that drags on offers to stop")
+    let stoppedAt = Date()
+    tunnel.cancelRefresh()
+    let stopped = await refreshing.value
+    Check.equal(stopped, .cancelled, "and stops when asked")
+    Check.isTrue(Date().timeIntervalSince(stoppedAt) < 3, "at once, rather than waiting the server out")
+    Check.equal(tunnel.nodes.map(\.name), shown, "with the servers untouched")
+    Check.isTrue(!tunnel.isRefreshing && !tunnel.canStopRefresh, "and nothing left in flight")
+    server.delay = 0
 }

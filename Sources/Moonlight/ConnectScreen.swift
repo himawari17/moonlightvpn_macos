@@ -14,63 +14,72 @@ struct ConnectScreen: View {
     /// The drawer's natural height, measured, so it opens to exactly its
     /// content rather than to a guess.
     @State private var drawerContent: CGFloat = 0
-    /// The parts above and below the power button, measured. Neither changes
-    /// when the drawer opens, so the button's size and the page's offset can
-    /// be worked out from them in the same animation as the drawer — measuring
-    /// the whole column instead re-read it after the button had resized, and
-    /// the page jumped at the end of the spring.
-    @State private var aboveButton: CGFloat = 0
-    @State private var belowButton: CGFloat = 0
+    /// Everything above the server list — the time, the button, the state,
+    /// the notes under it — and the list's heading and picker, measured.
+    /// Neither changes when the drawer opens, so the page's offset can be
+    /// worked out from them in the same animation as the drawer — measuring
+    /// the whole column instead re-read it mid-spring, and the page jumped at
+    /// the end of it.
+    @State private var heroHeight: CGFloat = 0
+    @State private var headHeight: CGFloat = 0
     /// What the last refresh started here came to, while it is on screen.
     @State private var toast: RefreshToast?
 
-    /// One curve for everything the drawer moves — the button's size, the
-    /// page's offset, the list's height and fade, the chevron. A spring
-    /// damped to just short of settling on its own: it eases in and lands
-    /// without the overshoot that makes a bounce read as a toy.
+    /// One curve for everything the drawer moves — the page's offset, the
+    /// list's height and fade, the chevron. A spring damped to just short of
+    /// settling on its own: it eases in and lands without the overshoot that
+    /// makes a bounce read as a toy.
     static let drawer = Motion.standard
     private static let pickerHeight: CGFloat = 60
     private static let drawerGap: CGFloat = 10
+    /// The space between the notes under the button and the server list.
+    private static let listGap: CGFloat = 28
 
     var body: some View {
         GeometryReader { geometry in
             let height = geometry.size.height
-            let button = PowerButton.side(large: !serversOpen)
             // The window's centre, in this page's coordinates. The page starts
             // under the title bar and ends above a margin, so its own centre
             // sits lower than the window's — and the eye centres on the window.
             let frame = geometry.frame(in: .global)
             let centre = (frame.minY + height + RootView.pageBottomInset) / 2 - frame.minY
+            // How far down the column the server list starts.
+            let listTop = heroHeight + Self.listGap
             VStack(spacing: 0) {
-                timer
-                    .padding(.bottom, 20)
-                    .background(measure(AboveButtonKey.self))
-                PowerButton(state: tunnel.state, enabled: tunnel.hasSubscription,
-                            large: !serversOpen) {
-                    Task { await tunnel.toggle() }
-                }
-                .help("\(L.t(tunnel.state.isConnected ? .hintDisconnect : .hintConnect, locale)) · ⌘⇧C")
-                belowButtonContent
-                    .background(measure(BelowButtonKey.self))
+                hero
+                    .background(measure(HeroHeightKey.self))
+                    // Gone before it reaches the top edge on the way out; back
+                    // as the column comes down on the way in.
+                    .opacity(serversOpen ? 0 : 1)
+                    .animation(serversOpen ? .easeOut(duration: 0.16) : Self.drawer.delay(0.08),
+                               value: serversOpen)
+                    .allowsHitTesting(!serversOpen)
+                    .accessibilityHidden(serversOpen)
+                serverList
+                    .frame(maxWidth: 560)
+                    .background(measure(HeadHeightKey.self))
+                    .padding(.top, Self.listGap)
                 if !tunnel.nodes.isEmpty {
-                    drawer(room: height - aboveButton - PowerButton.side(large: false)
-                           - belowButton - Self.drawerGap)
+                    drawer(room: height - headHeight - Self.drawerGap)
                         .frame(maxWidth: 560)
                         .padding(.top, Self.drawerGap)
                 }
             }
-            // Closed, the button is the page: large, and the column it heads —
-            // time, button, state, servers — sits in the middle of the window,
-            // as much space above as below. Centring the button alone left the
-            // column hanging low under a band of empty space. Opening the
-            // drawer shrinks the button and lifts the column to the top, and
-            // the list takes the room that frees.
-            .padding(.top, serversOpen ? 0 : Self.centredOffset(
-                page: height, centre: centre, column: aboveButton + button + belowButton))
+            // Closed, the button is the page, and the column it heads — time,
+            // button, state, servers — sits in the middle of the window, as
+            // much space above as below. Centring the button alone left the
+            // column hanging low under a band of empty space.
+            //
+            // Open, the list is the page: the column goes up until the list's
+            // heading is at the top, and the list takes everything under it.
+            // The button used to shrink and stay, and with the service's
+            // message and a note under it that left room for two servers.
+            .offset(y: serversOpen ? -listTop : Self.centredOffset(
+                page: height, centre: centre, column: listTop + headHeight))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .onPreferenceChange(AboveButtonKey.self) { settle($aboveButton, $0) }
-        .onPreferenceChange(BelowButtonKey.self) { settle($belowButton, $0) }
+        .onPreferenceChange(HeroHeightKey.self) { settle($heroHeight, $0) }
+        .onPreferenceChange(HeadHeightKey.self) { settle($headHeight, $0) }
         // Over the page rather than in it, so its arrival moves nothing; at
         // the foot, where it covers neither the time nor the button. The
         // curve is scoped to the note: on the page it would also have
@@ -93,11 +102,11 @@ struct ConnectScreen: View {
     /// not — was left to the timestamp on another page.
     private func refreshAndReport() async {
         guard !tunnel.isRefreshing else { return }
-        let updated = await tunnel.refresh()
-        let shown = RefreshToast(updated: updated, issue: updated ? nil : tunnel.issue)
+        let outcome = await tunnel.refresh()
+        let shown = RefreshToast(outcome: outcome, issue: outcome == .failed ? tunnel.issue : nil)
         toast = shown
         // Long enough to read; a failure carries a reason, so it stays longer.
-        try? await Task.sleep(nanoseconds: updated ? 3_200_000_000 : 6_000_000_000)
+        try? await Task.sleep(nanoseconds: outcome == .failed ? 6_000_000_000 : 3_200_000_000)
         if toast?.id == shown.id { toast = nil }
     }
 
@@ -140,9 +149,21 @@ struct ConnectScreen: View {
         UptimeLabel(meter: tunnel.meter, connected: tunnel.state.isConnected)
     }
 
-    /// The state in words, why it is not connected, the service's message,
-    /// and the server picker.
-    private var belowButtonContent: some View {
+    /// Everything above the server list.
+    private var hero: some View {
+        VStack(spacing: 0) {
+            timer
+                .padding(.bottom, 20)
+            PowerButton(state: tunnel.state, enabled: tunnel.hasSubscription) {
+                Task { await tunnel.toggle() }
+            }
+            .help("\(L.t(tunnel.state.isConnected ? .hintDisconnect : .hintConnect, locale)) · ⌘⇧C")
+            notes
+        }
+    }
+
+    /// The state in words, why it is not connected, and the service's message.
+    private var notes: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 StatusPill(
@@ -172,9 +193,6 @@ struct ConnectScreen: View {
                     .padding(.top, 28)
                     .transition(.opacity)
             }
-            serverList
-                .frame(maxWidth: 560)
-                .padding(.top, 28)
         }
         .animation(Motion.standard, value: tunnel.issue)
         .animation(Motion.standard, value: tunnel.info.announce)
@@ -224,10 +242,13 @@ struct ConnectScreen: View {
                 .disabled(!tunnel.hasSubscription || tunnel.isPinging)
                 .opacity(tunnel.hasSubscription ? 1 : 0.45)
 
-                GlassIconButton(icon: .refreshCW, spinning: tunnel.isRefreshing) {
-                    Task { await refreshAndReport() }
+                RefreshButton(refreshing: tunnel.isRefreshing, stoppable: tunnel.canStopRefresh) {
+                    if tunnel.canStopRefresh {
+                        tunnel.cancelRefresh()
+                    } else {
+                        Task { await refreshAndReport() }
+                    }
                 }
-                .help(L.t(tunnel.isRefreshing ? .refreshing : .refresh, locale))
                 .disabled(!tunnel.hasSubscription)
                 .opacity(tunnel.hasSubscription ? 1 : 0.45)
             }
@@ -452,18 +473,11 @@ private struct PowerButton: View {
     @Environment(\.palette) private var palette
     let state: ConnectionState
     let enabled: Bool
-    /// Large while it is the only thing on the page; the drawer shrinks it.
-    var large = false
     let action: () -> Void
 
     @State private var hovering = false
 
-    private static let largeScale: CGFloat = 2
-    private static let compactSide: CGFloat = 92
-
-    static func side(large: Bool) -> CGFloat { compactSide * (large ? largeScale : 1) }
-
-    private var side: CGFloat { Self.side(large: large) }
+    private let side: CGFloat = 184
     private var moon: CGFloat { side * 0.5 }
     private var full: Bool { state.isConnected }
 
@@ -689,16 +703,16 @@ private struct Cascade: ViewModifier {
     }
 }
 
-/// The height of what sits above the power button.
-private struct AboveButtonKey: PreferenceKey {
+/// The height of everything above the server list.
+private struct HeroHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
     }
 }
 
-/// The height of what sits below it, the drawer aside.
-private struct BelowButtonKey: PreferenceKey {
+/// The height of the server list's heading and picker.
+private struct HeadHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
@@ -763,31 +777,52 @@ private struct ModeSwitch: View {
 /// How a refresh started from this page went.
 private struct RefreshToast: Equatable {
     let id = UUID()
-    let updated: Bool
-    /// Why not, when it did not.
+    let outcome: TunnelController.RefreshOutcome
+    /// Why not, when it failed.
     let issue: TunnelIssue?
 }
 
-/// A short note at the foot of the page: updated, or not and why. Clicking it
-/// puts it away; otherwise it goes on its own.
+/// A short note at the foot of the page: updated, stopped, or not and why.
+/// Clicking it puts it away; otherwise it goes on its own.
 private struct ToastView: View {
     @Environment(\.palette) private var palette
     @Environment(\.appLocale) private var locale
     let toast: RefreshToast
     let dismiss: () -> Void
 
-    private var tone: Color { toast.updated ? palette.stUpInk : palette.danger }
+    private var tone: Color {
+        switch toast.outcome {
+        case .updated: return palette.stUpInk
+        case .cancelled: return palette.text2
+        case .failed: return palette.danger
+        }
+    }
+
+    private var icon: Icon {
+        switch toast.outcome {
+        case .updated: return .check
+        case .cancelled: return .x
+        case .failed: return .circleAlert
+        }
+    }
+
+    private var title: L.Key {
+        switch toast.outcome {
+        case .updated: return .refreshDone
+        case .cancelled: return .refreshStopped
+        case .failed: return .refreshFailed
+        }
+    }
 
     var body: some View {
         Button(action: dismiss) {
             HStack(spacing: 12) {
-                IconView(toast.updated ? .check : .circleAlert, size: 15,
-                         strokeWidth: toast.updated ? 2.6 : 2.2)
+                IconView(icon, size: 15, strokeWidth: toast.outcome == .updated ? 2.6 : 2.2)
                     .foregroundStyle(tone)
                     .frame(width: 30, height: 30)
                     .background(Circle().fill(tone.opacity(0.14)))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(L.t(toast.updated ? .refreshDone : .refreshFailed, locale))
+                    Text(L.t(title, locale))
                         .font(.ml(13.5, .heavy))
                         .foregroundStyle(palette.text)
                     Text(detail)
@@ -806,7 +841,38 @@ private struct ToastView: View {
     }
 
     private var detail: String {
-        if toast.updated { return L.t(.refreshDoneDetail, locale) }
-        return toast.issue.map { L.issue($0, locale) } ?? L.t(.issueTryLater, locale)
+        switch toast.outcome {
+        case .updated: return L.t(.refreshDoneDetail, locale)
+        case .cancelled: return L.t(.refreshStoppedDetail, locale)
+        case .failed: return toast.issue.map { L.issue($0, locale) } ?? L.t(.issueTryLater, locale)
+        }
+    }
+}
+
+// MARK: - Refresh button
+
+/// Refreshes the subscription, and stops a refresh that is taking too long.
+///
+/// While a refresh runs the glyph turns. Once it has run long enough to be
+/// worth stopping — see `TunnelController.canStopRefresh` — pointing at the
+/// button turns the glyph into a cross, and a press stops it: the browser's
+/// reload button, which is a stop button while a page loads.
+private struct RefreshButton: View {
+    @Environment(\.appLocale) private var locale
+    let refreshing: Bool
+    let stoppable: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    private var showsStop: Bool { stoppable && hovering }
+
+    var body: some View {
+        GlassIconButton(icon: showsStop ? .x : .refreshCW,
+                        spinning: refreshing && !showsStop, action: action)
+            .onHover { hovering = $0 }
+            .help(L.t(stoppable ? .stopRefresh : refreshing ? .refreshing : .refresh, locale))
+            // A glyph alone says nothing to VoiceOver.
+            .accessibilityLabel(L.t(stoppable ? .stopRefresh : .refresh, locale))
     }
 }

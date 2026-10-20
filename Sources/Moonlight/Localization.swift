@@ -40,7 +40,7 @@ public enum L {
         // Subscription
         case plan, planUnknown, traffic
         case trafficCaps, subscriptionLink, copy, copied
-        case refreshSubscription, refreshMetaIdle, refreshMetaSyncing, refreshMetaDone
+        case refreshSubscription, refreshMetaIdle, refreshMetaSyncing, refreshMetaStop, refreshMetaDone
         case extendSubscription, extendSubtitle, personalAccount, personalAccountSub
         case addSubscriptionRow, addSubscriptionSubtitle
         case validUntil, unlimited
@@ -64,12 +64,13 @@ public enum L {
         case ourChannel, ourChannelSub, support, supportSub
         case version, checkUpdates, keysStayHere
         case modeSystemProxy, modeSystemProxySub, modeTun, modeTunSub, modeProxyShort
-        case refreshDone, refreshDoneDetail, refreshFailed
+        case refreshDone, refreshDoneDetail, refreshFailed, refreshStopped, refreshStoppedDetail
+        case stopRefresh
         case helperInstall, helperInstallSub, helperRemove, helperInstalled
         case coreVersion, viewLog, viewLogSub, install, remove
         // Logs
         case navLogs, titleLogs, subtitleLogs
-        case logAll, logClient, logCore, logEmpty
+        case logAll, logClient, logCore, logEmpty, logCopy, logCopied, logCopyLine
         case logTime, logLevel, logSource, logMessage
         // Connections
         case navConnections, titleConnections, subtitleConnections
@@ -107,7 +108,7 @@ public enum L {
         case linkClose, linkRetry, linkFailedTitle, linkInvalidTitle, linkInvalidBody
         // Issues
         case issueInvalidLink, issueNoSubscription, issueOffline, issueServerUnavailable
-        case issueErrorCode, issueTryLater, issueLinkRejected, issueEmpty, issueNoUsable
+        case issueErrorCode, issueTryLater, issueLinkRejected, issueEmpty, issueNoUsable, issueNoServersSent
         case issueDeviceLimit, issueDeviceNotSupported, issueCoreFailed, issueCoreStopped
         case issueRoutesTaken, issueTunFailed, issueHelperMissing, issueHelperOutdated
         case issueDatabaseBlocked, issueDatabaseBlockedASN
@@ -177,6 +178,7 @@ public enum L {
             case .refreshSubscription: return "Обновить подписку"
             case .refreshMetaIdle: return "Проверить серверы, дни и трафик"
             case .refreshMetaSyncing: return "Синхронизация с сервером…"
+            case .refreshMetaStop: return "Синхронизация затянулась — нажмите, чтобы остановить"
             case .refreshMetaDone: return "Обновлено только что"
             case .extendSubscription: return "Продлить подписку"
             case .extendSubtitle: return "В Telegram-боте"
@@ -232,6 +234,9 @@ public enum L {
             case .refreshDone: return "Подписка обновлена"
             case .refreshDoneDetail: return "Серверы, дни и трафик — актуальные"
             case .refreshFailed: return "Подписка не обновлена"
+            case .refreshStopped: return "Обновление остановлено"
+            case .refreshStoppedDetail: return "Список серверов не изменился"
+            case .stopRefresh: return "Остановить обновление"
             case .helperInstall: return "Установить помощник"
             case .helperInstallSub: return "Один запрос пароля администратора"
             case .helperRemove: return "Удалить помощник"
@@ -248,6 +253,9 @@ public enum L {
             case .logClient: return "Клиент"
             case .logCore: return "Ядро"
             case .logEmpty: return "Пока пусто"
+            case .logCopy: return "Скопировать показанные строки"
+            case .logCopied: return "Скопировано"
+            case .logCopyLine: return "Скопировать строку"
             case .logTime: return "ВРЕМЯ"
             case .logLevel: return "УРОВЕНЬ"
             case .logSource: return "ИСТОЧНИК"
@@ -390,6 +398,7 @@ public enum L {
             case .issueLinkRejected: return "Ссылка больше не действует. Возьмите новую в боте."
             case .issueEmpty: return "В подписке нет серверов"
             case .issueNoUsable: return "В подписке нет серверов, которые поддерживает приложение"
+            case .issueNoServersSent: return "Сервис не прислал серверы — список остался прежним"
             case .issueDeviceLimit: return "Достигнут лимит устройств. Отключите другое устройство в личном кабинете."
             case .issueDeviceNotSupported: return "Подписка не принимает это устройство"
             case .issueCoreFailed: return "Не удалось запустить VPN. Подробности — в логах."
@@ -473,6 +482,7 @@ public enum L {
             case .refreshSubscription: return "Refresh subscription"
             case .refreshMetaIdle: return "Check servers, days and traffic"
             case .refreshMetaSyncing: return "Syncing with the server…"
+            case .refreshMetaStop: return "Taking a while — click to stop"
             case .refreshMetaDone: return "Updated just now"
             case .extendSubscription: return "Extend subscription"
             case .extendSubtitle: return "In the Telegram bot"
@@ -528,6 +538,9 @@ public enum L {
             case .refreshDone: return "Subscription updated"
             case .refreshDoneDetail: return "Servers, days and traffic are up to date"
             case .refreshFailed: return "Subscription not updated"
+            case .refreshStopped: return "Update stopped"
+            case .refreshStoppedDetail: return "The server list is unchanged"
+            case .stopRefresh: return "Stop updating"
             case .helperInstall: return "Install the helper"
             case .helperInstallSub: return "One administrator prompt"
             case .helperRemove: return "Remove the helper"
@@ -544,6 +557,9 @@ public enum L {
             case .logClient: return "Client"
             case .logCore: return "Core"
             case .logEmpty: return "Nothing yet"
+            case .logCopy: return "Copy the lines shown"
+            case .logCopied: return "Copied"
+            case .logCopyLine: return "Copy line"
             case .logTime: return "TIME"
             case .logLevel: return "LEVEL"
             case .logSource: return "SOURCE"
@@ -686,6 +702,7 @@ public enum L {
             case .issueLinkRejected: return "This link no longer works. Get a new one from the bot."
             case .issueEmpty: return "The subscription has no servers"
             case .issueNoUsable: return "None of the subscription's servers work with this app"
+            case .issueNoServersSent: return "The service sent no servers this time, so the list is unchanged"
             case .issueDeviceLimit: return "Device limit reached. Remove another device in your account."
             case .issueDeviceNotSupported: return "The subscription doesn't accept this device"
             case .issueCoreFailed: return "Couldn't start the VPN. See the logs for details."
@@ -747,6 +764,7 @@ extension L {
         case .linkRejected: return t(.issueLinkRejected, locale)
         case .emptySubscription: return t(.issueEmpty, locale)
         case .noUsableServers: return t(.issueNoUsable, locale)
+        case .noServersSent: return t(.issueNoServersSent, locale)
         case .deviceLimit(let message): return message ?? t(.issueDeviceLimit, locale)
         case .deviceNotSupported: return t(.issueDeviceNotSupported, locale)
         case .coreFailed: return t(.issueCoreFailed, locale)

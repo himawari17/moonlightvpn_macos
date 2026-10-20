@@ -157,6 +157,54 @@ public struct MihomoConfig {
         return descriptions
     }
 
+    /// The subscription's servers by name, in the order it lists them — which
+    /// is the order the panel keeps its hosts in.
+    public static func proxyOrder(panelYAML: String) -> [String] {
+        guard let root = try? Yams.load(yaml: panelYAML) as? [String: Any] else { return [] }
+        return (root["proxies"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+    }
+
+    /// `names` — a group's members as the core reports them — with the
+    /// servers put back in the subscription's order.
+    ///
+    /// A group that takes its servers with `include-all` gets them from the
+    /// core sorted by name, so the panel's order — Russia, Estonia, Latvia… —
+    /// reached the screen as Germany, Germany, Estonia 2… Only the servers
+    /// move, and only among the places servers held: an entry the
+    /// subscription does not list as a server, such as an auto-picker the
+    /// group names first, stays where the group put it.
+    public static func inPanelOrder(_ names: [String], order: [String]) -> [String] {
+        var rank: [String: Int] = [:]
+        for (index, name) in order.enumerated() where rank[name] == nil { rank[name] = index }
+        var servers = names.filter { rank[$0] != nil }
+            .sorted { rank[$0]! < rank[$1]! }
+            .makeIterator()
+        return names.map { rank[$0] == nil ? $0 : servers.next()! }
+    }
+
+    /// Whether a subscription entry is a stand-in rather than a server.
+    ///
+    /// When the panel has no server to give this client — none configured for
+    /// this kind of subscription, or an account that is expired, over its
+    /// traffic or switched off — it still answers with a list: entries whose
+    /// names carry its message ("No hosts found", "Подписка истекла") and
+    /// which point at `0.0.0.0`, port 1, with an all-zero UUID. Taken as a
+    /// refresh, they replaced every working server with rows that connect to
+    /// nothing.
+    public static func isStandIn(_ proxy: [String: Any]) -> Bool {
+        let server = (proxy["server"] as? String)?.trimmingCharacters(in: .whitespaces)
+        if server == "0.0.0.0" || server == "::" { return true }
+        let id = (proxy["uuid"] as? String) ?? (proxy["password"] as? String)
+        return id == "00000000-0000-0000-0000-000000000000"
+    }
+
+    /// Whether the subscription has at least one real server — see
+    /// ``isStandIn(_:)``.
+    public static func hasServers(panelYAML: String) -> Bool {
+        guard let root = try? Yams.load(yaml: panelYAML) as? [String: Any] else { return false }
+        return (root["proxies"] as? [[String: Any]] ?? []).contains { !isStandIn($0) }
+    }
+
     /// A minimal config that carries just a proxy list — the shape the
     /// share-link fallback produces before ``build(panelYAML:overrides:)`` runs.
     public static func yamlFromProxies(_ proxies: [[String: Any]]) -> String {

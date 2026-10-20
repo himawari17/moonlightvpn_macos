@@ -169,4 +169,33 @@ func remnawaveTests() {
                     "a 200 with the limit header is the device limit, not an empty subscription")
         Check.equal(StubProtocol.requests, 1, "and the other endpoints are not tried after it")
     }
+
+    Check.suite("Stand-ins instead of servers") {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let client = SubscriptionClient(
+            session: URLSession(configuration: configuration),
+            device: DeviceIdentity(hwid: "h", osVersion: "o", model: "m", appVersion: "1")
+        )
+        StubProtocol.headers = ["subscription-userinfo": "upload=0; download=5; total=10; expire=0"]
+        StubProtocol.body = Data("""
+        proxies:
+          - {name: "→ Подписка истекла", type: vless, server: 0.0.0.0, port: 1, uuid: 00000000-0000-0000-0000-000000000000}
+        """.utf8)
+        StubProtocol.requests = 0
+        let outcome: String = blocking {
+            do {
+                _ = try await client.fetch("https://sub.example/abc")
+                return "fetched"
+            } catch let failure as SubscriptionClient.Failure {
+                if case .noServers(let info) = failure { return "none:\(info.total ?? 0)" }
+                return "other:\(failure)"
+            } catch {
+                return "error:\(error)"
+            }
+        }
+        Check.equal(outcome, "none:10", "a list of stand-ins is no servers, with the plan's figures kept")
+        Check.equal(StubProtocol.requests, 1,
+                    "and the share-link fallback is not tried — it would bring the same stand-ins")
+    }
 }

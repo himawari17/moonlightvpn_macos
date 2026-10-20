@@ -144,12 +144,18 @@ struct SubscriptionScreen: View {
                 trailing: nil,
                 spinning: tunnel.isRefreshing
             ) {
-                Task { await tunnel.refresh() }
+                // A second press stops a refresh that is taking too long.
+                if tunnel.canStopRefresh {
+                    tunnel.cancelRefresh()
+                } else {
+                    Task { await tunnel.refresh() }
+                }
             }
         }
     }
 
     private var refreshMeta: String {
+        if tunnel.canStopRefresh { return L.t(.refreshMetaStop, locale) }
         if tunnel.isRefreshing { return L.t(.refreshMetaSyncing, locale) }
         if let last = tunnel.lastRefresh {
             return "\(L.t(.lastUpdated, locale)) \(L.ago(last, locale))"

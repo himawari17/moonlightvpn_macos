@@ -224,3 +224,54 @@ func updaterTests() {
         Check.equal(LogEntry.Level(core: "something else"), .info, "anything unknown is info")
     }
 }
+
+@MainActor
+func logStoreTests() {
+    Check.suite("LogStore · how long lines are kept") {
+        let store = LogStore()
+        let now = Date()
+        store.append(.info, .client, "info, three hours old", at: now.addingTimeInterval(-3 * 3600))
+        store.append(.error, .core, "error, three hours old", at: now.addingTimeInterval(-3 * 3600))
+        store.append(.debug, .core, "debug, two and a half hours old", at: now.addingTimeInterval(-2.5 * 3600))
+        store.append(.warning, .client, "warning, eleven hours old", at: now.addingTimeInterval(-11 * 3600))
+        store.append(.info, .client, "info, an hour old", at: now.addingTimeInterval(-3600))
+        store.prune(now: now)
+        Check.equal(store.entries.map(\.message), ["error, three hours old", "info, an hour old"],
+                    "debug and info for two hours, warnings and errors for ten")
+    }
+
+    Check.suite("LogStore · caps") {
+        let store = LogStore(routineLimit: 3, problemLimit: 2)
+        store.client("why it dropped", level: .error)
+        for index in 1...10 { store.client("connection \(index)") }
+        Check.equal(store.entries.map(\.message),
+                    ["why it dropped", "connection 8", "connection 9", "connection 10"],
+                    "a burst of info lines does not push out an error")
+        for index in 1...3 { store.client("warning \(index)", level: .warning) }
+        Check.equal(store.entries.filter(\.level.isProblem).map(\.message), ["warning 2", "warning 3"],
+                    "and problems keep to a cap of their own")
+    }
+
+    Check.suite("LogStore · shutdown noise") {
+        Check.isTrue(LogStore.isShutdownNoise("batch read packet: bad file descriptor"),
+                     "the TUN reader finding its device closed is not logged")
+        Check.isTrue(LogStore.isShutdownNoise("read packet: file already closed"), "in either wording")
+        Check.isTrue(!LogStore.isShutdownNoise("dial tcp 1.2.3.4:443: bad file descriptor"),
+                     "the same errno elsewhere still is")
+        Check.isTrue(!LogStore.isShutdownNoise("[TCP] dial Панель error: read packet timeout"),
+                     "and so is a read that failed for another reason")
+    }
+
+    Check.suite("LogStore · as text") {
+        let entries = [
+            LogEntry(level: .warning, source: .core, message: "first"),
+            LogEntry(level: .info, source: .client, message: "second"),
+        ]
+        let lines = LogStore.text(of: entries).components(separatedBy: "\n")
+        Check.equal(lines.count, 2, "one line per entry")
+        Check.isTrue(lines[0].hasSuffix("  WARN  CORE  first"), "level, source and message, as on screen")
+        Check.isTrue(lines[1].hasSuffix("  INFO  CLIENT  second"), "for every level")
+        Check.isTrue(lines[0].range(of: #"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"#, options: .regularExpression) != nil,
+                     "with the date, since a log is kept for hours")
+    }
+}

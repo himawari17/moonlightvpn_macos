@@ -21,6 +21,11 @@ public final class TunnelController: ObservableObject {
     /// why they are not published here.
     public let meter = TrafficMeter()
     @Published public private(set) var isRefreshing = false
+    /// Whether the refresh under way can be stopped — see ``cancelRefresh()``.
+    /// Set once it has gone on long enough to want a way out, so a refresh
+    /// that takes a second never offers one, and a double click cannot stop
+    /// the refresh its first click started.
+    @Published public private(set) var canStopRefresh = false
     @Published public private(set) var isPinging = false
     /// Nodes whose probe has not come back yet in the current pass.
     ///
@@ -138,6 +143,8 @@ public final class TunnelController: ObservableObject {
     private var parking: Task<Void, Never>?
     /// The app is on its way out: nothing is to be started any more.
     private var quitting = false
+    /// The refresh under way — see ``cancelRefresh()``.
+    private var refreshTask: Task<RefreshOutcome, Never>?
 
     public init(
         preferences: Preferences = .shared,
@@ -352,7 +359,8 @@ public final class TunnelController: ObservableObject {
             issue = .invalidLink
             return false
         }
-        return await refresh(from: url.trimmingCharacters(in: .whitespacesAndNewlines), adopting: true)
+        return await refresh(from: url.trimmingCharacters(in: .whitespacesAndNewlines),
+                             adopting: true) == .updated
     }
 
     public func removeSubscription() async {
@@ -373,10 +381,30 @@ public final class TunnelController: ObservableObject {
         profileRules = []
     }
 
+    /// How a refresh ended.
+    public enum RefreshOutcome: Equatable, Sendable {
+        case updated
+        /// Nothing changed; ``issue`` says why.
+        case failed
+        /// Stopped by ``cancelRefresh()`` before anything changed.
+        case cancelled
+    }
+
     @discardableResult
-    public func refresh() async -> Bool {
-        guard let url = preferences.subscriptionURL else { return false }
+    public func refresh() async -> RefreshOutcome {
+        guard let url = preferences.subscriptionURL else { return .failed }
         return await refresh(from: url, adopting: false)
+    }
+
+    /// Stops the refresh under way, if it is still downloading.
+    ///
+    /// The download is three endpoints tried in turn, each allowed its own
+    /// timeout, and the plan's figures after them: on a bad network that was
+    /// a couple of minutes of a turning glyph with no way out but waiting.
+    /// Once the new list has arrived and is going in, the refresh finishes —
+    /// half a swap would be worse than either list.
+    public func cancelRefresh() {
+        refreshTask?.cancel()
     }
 
     /// The intervals offered, in hours; 0 is never.
@@ -405,14 +433,89 @@ public final class TunnelController: ObservableObject {
         await refresh()
     }
 
-    private func refresh(from url: String, adopting: Bool) async -> Bool {
-        guard !isRefreshing else { return false }
+    private func refresh(from url: String, adopting: Bool) async -> RefreshOutcome {
+        guard !isRefreshing else { return .failed }
         isRefreshing = true
-        defer { isRefreshing = false }
+        // A task of its own, so that ``cancelRefresh()`` has something to
+        // cancel whoever started the refresh.
+        let task = Task { await self.download(url, adopting: adopting) }
+        refreshTask = task
+        let offer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled, let self, self.refreshTask != nil else { return }
+            self.canStopRefresh = true
+        }
+        defer {
+            offer.cancel()
+            refreshTask = nil
+            canStopRefresh = false
+            isRefreshing = false
+        }
+        return await task.value
+    }
 
+    /// Everything a refresh needs from the network, checked before anything
+    /// on screen or on disk changes. A refresh used to write what it fetched
+    /// over the subscription first and find out afterwards whether it could
+    /// be used — and one that could not left the list broken until the next
+    /// one that could.
+    private func download(_ url: String, adopting: Bool) async -> RefreshOutcome {
+        let result: SubscriptionClient.Result
+        let planInfo: SubscriptionInfo?
         do {
-            let result = try await subscriptions.fetch(url)
-            let replacing = adopting && url != preferences.subscriptionURL
+            result = try await subscriptions.fetch(url)
+            // Built here, off to one side: a subscription the config cannot
+            // be made from is a failed refresh, not a broken list.
+            let yaml = result.yaml, overrides = overrides(mode: .systemProxy)
+            _ = try await offMain { try MihomoConfig.build(panelYAML: yaml, overrides: overrides) }
+            // The `/info` endpoint carries the device count the headers do
+            // not, but the headers are what every subscription server
+            // implements consistently — so info first, headers on top.
+            planInfo = await subscriptions.fetchInfo(url)
+            try Task.checkCancellation()
+        } catch let error where Task.isCancelled || error is CancellationError
+                                  || (error as? URLError)?.code == .cancelled {
+            LogStore.shared.client("Subscription update stopped; nothing was changed")
+            return .cancelled
+        } catch SubscriptionClient.Failure.noServers(let headers) {
+            // What the response said about the plan still holds, and is
+            // usually the reason — an expired account gets stand-ins too.
+            if !adopting || url == preferences.subscriptionURL {
+                var merged = (await subscriptions.fetchInfo(url) ?? SubscriptionInfo()).merging(headers)
+                merged.title = merged.title ?? info.title
+                info = merged
+                preferences.cachedInfo = merged
+            }
+            // A link being added has no list to keep.
+            issue = adopting && url != preferences.subscriptionURL ? .emptySubscription : .noServersSent
+            LogStore.shared.client("Subscription update came without servers; keeping the current list",
+                                   level: .warning)
+            return .failed
+        } catch {
+            issue = TunnelIssue.classify(error)
+            LogStore.shared.client("Subscription update failed: \(error.localizedDescription)",
+                                   level: .warning)
+            return .failed
+        }
+        // Not cancellable from here on: a task of its own, outside the one
+        // ``cancelRefresh()`` cancels, so the core's reload is not cut off
+        // half way.
+        refreshTask = nil
+        canStopRefresh = false
+        return await Task {
+            await self.install(result, planInfo: planInfo, from: url, adopting: adopting)
+        }.value
+    }
+
+    /// Puts a fetched subscription in place of the current one, and puts the
+    /// current one back if the core will not take it.
+    private func install(_ result: SubscriptionClient.Result, planInfo: SubscriptionInfo?,
+                         from url: String, adopting: Bool) async -> RefreshOutcome {
+        let replacing = adopting && url != preferences.subscriptionURL
+        let previousURL = preferences.subscriptionURL
+        let previousYAML = try? String(contentsOf: panelURL, encoding: .utf8)
+        do {
+            try result.yaml.write(to: panelURL, atomically: true, encoding: .utf8)
             if adopting {
                 preferences.subscriptionURL = url
             }
@@ -423,20 +526,6 @@ public final class TunnelController: ObservableObject {
                 preferences.serverDescriptions = [:]
                 selectedNode = nil
             }
-            try result.yaml.write(to: panelURL, atomically: true, encoding: .utf8)
-            subscriptionSource = result.source
-
-            // The `/info` endpoint carries the device count the headers do not,
-            // but the headers are what every subscription server implements
-            // consistently — so info first, headers layered on top.
-            var merged = (await subscriptions.fetchInfo(url) ?? SubscriptionInfo())
-                .merging(result.info)
-            if !replacing { merged.title = merged.title ?? info.title }
-            info = merged
-            preferences.cachedInfo = merged
-            lastRefresh = Date()
-            preferences.lastRefresh = lastRefresh
-            issue = nil
             await updateRedactions()
             await refreshRoutingInputs()
 
@@ -466,13 +555,31 @@ public final class TunnelController: ObservableObject {
                     if await ensureCoreRunning(), underWay { try await reloadRunningCore() }
                 }
             }
-            return true
         } catch {
             issue = TunnelIssue.classify(error)
-            LogStore.shared.client("Subscription update failed: \(error.localizedDescription)",
-                                   level: .warning)
-            return false
+            LogStore.shared.client("Subscription update failed: \(error.localizedDescription); "
+                                   + "keeping the current list", level: .warning)
+            // The previous subscription back, and the core on it again.
+            if let previousYAML {
+                try? previousYAML.write(to: panelURL, atomically: true, encoding: .utf8)
+            } else {
+                try? FileManager.default.removeItem(at: panelURL)
+            }
+            if adopting { preferences.subscriptionURL = previousURL }
+            await refreshRoutingInputs()
+            if previousYAML != nil, await coreAnswers() { try? await reloadRunningCore() }
+            return .failed
         }
+
+        subscriptionSource = result.source
+        var merged = (planInfo ?? SubscriptionInfo()).merging(result.info)
+        if !replacing { merged.title = merged.title ?? info.title }
+        info = merged
+        preferences.cachedInfo = merged
+        lastRefresh = Date()
+        preferences.lastRefresh = lastRefresh
+        issue = nil
+        return .updated
     }
 
     // MARK: - Connect
@@ -982,6 +1089,8 @@ public final class TunnelController: ObservableObject {
         var rules: [String]?
         var labels: [String: String]
         var descriptions: [String: String]
+        /// The servers' names in the subscription's order.
+        var order: [String]
     }
 
     private func discoverSelector() async throws {
@@ -1001,7 +1110,8 @@ public final class TunnelController: ObservableObject {
             return SelectorInputs(
                 rules: (try? Yams.load(yaml: config) as? [String: Any])?["rules"] as? [String],
                 labels: Self.protocolLabels(panelYAML: panel),
-                descriptions: MihomoConfig.serverDescriptions(panelYAML: panel)
+                descriptions: MihomoConfig.serverDescriptions(panelYAML: panel),
+                order: MihomoConfig.proxyOrder(panelYAML: panel)
             )
         }
         if let rules = inputs.rules {
@@ -1018,6 +1128,10 @@ public final class TunnelController: ObservableObject {
             throw MihomoConfig.Failure.noProxies
         }
         var listed = try await api.nodes(in: selectorGroup)
+        // In the panel's order, not the core's — see `MihomoConfig.inPanelOrder`.
+        let byName = Dictionary(listed.map { ($0.name, $0) }) { first, _ in first }
+        listed = MihomoConfig.inPanelOrder(listed.map(\.name), order: inputs.order)
+            .compactMap { byName[$0] }
 
         // A group has no transport of its own, so it borrows the one its members
         // share — which is what the panel's own list shows for it.
