@@ -96,9 +96,6 @@ final class CoreSupervisor {
             lock.unlock()
         }
 
-        process.terminationHandler = { _ in
-            pipe.fileHandleForReading.readabilityHandler = nil
-        }
 
         try process.run()
         lock.lock()
