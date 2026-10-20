@@ -230,7 +230,12 @@ public final class MihomoProcess: @unchecked Sendable {
         process.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            // Empty data is EOF; leaving the handler installed spins a thread.
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             self?.append(text)
         }
 

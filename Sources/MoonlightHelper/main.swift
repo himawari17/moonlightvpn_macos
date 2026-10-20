@@ -81,12 +81,23 @@ final class CoreSupervisor {
         process.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            // Empty data is EOF: the core exited and closed its end. A handler
+            // left installed at EOF fires again immediately and forever — one
+            // core per thread spinning at 100% CPU, one more for every restart.
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             guard let self else { return }
             lock.lock()
             lastLog.append(contentsOf: text.split(whereSeparator: \.isNewline).map(String.init))
             if lastLog.count > 100 { lastLog.removeFirst(lastLog.count - 100) }
             lock.unlock()
+        }
+
+        process.terminationHandler = { _ in
+            pipe.fileHandleForReading.readabilityHandler = nil
         }
 
         try process.run()
